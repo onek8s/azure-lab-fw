@@ -24,12 +24,12 @@ var errUsage = errors.New("usage")
 
 func commands() []command {
 	return []command{
-		{"run", "run the daemon", notImplemented("run")},
-		{"fetch", "download policy in file-source format", notImplemented("fetch")},
-		{"compile", "compile a policy and print ir|diagnostics (nft: W3)", runCompile},
+		{"run", "run the daemon", runRun},
+		{"fetch", "download policy in file-source format", runFetch},
+		{"compile", "compile a policy and print ir|diagnostics|nft", runCompile},
 		{"explain", "explain the decision for a flow", runExplain},
 		{"nsg-rules", "print inbound NSG rules required for DNAT", runNSGRules},
-		{"ca", "TLS inspection CA (ca export)", notImplemented("ca")},
+		{"ca", "TLS inspection CA (ca export)", runCA},
 		{"fqdn-tags", "print the FQDN tag catalogue", runFQDNTags},
 		{"version", "print version", func(_ []string, out, _ io.Writer) error {
 			_, err := fmt.Fprintf(out, "labfw %s (%s)\n", version, commit)

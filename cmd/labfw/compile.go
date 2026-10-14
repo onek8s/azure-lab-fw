@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/netip"
 	"net/url"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/onek8s/azure-lab-fw/internal/fqdn"
 	"github.com/onek8s/azure-lab-fw/internal/ir"
 	"github.com/onek8s/azure-lab-fw/internal/policy"
+	"github.com/onek8s/azure-lab-fw/internal/render/nft"
 	"github.com/onek8s/azure-lab-fw/internal/resolve"
 )
 
@@ -24,6 +26,8 @@ import (
 type policyFlags struct {
 	config, policy, leaf, localIP string
 	strict, allowSkipDeny         bool
+
+	cfg config.Config // effective config, set by load
 }
 
 func (pf *policyFlags) register(fs *flag.FlagSet) {
@@ -46,6 +50,7 @@ func (pf *policyFlags) load() (*ir.Policy, []ir.Diagnostic, error) {
 		}
 		cfg = *c
 	}
+	pf.cfg = cfg
 	path := pf.policy
 	if path == "" {
 		switch {
@@ -53,14 +58,21 @@ func (pf *policyFlags) load() (*ir.Policy, []ir.Diagnostic, error) {
 			return nil, nil, fmt.Errorf("--policy is required without --config: %w", errUsage)
 		case cfg.Policy.Source == "file":
 			path = cfg.Policy.File
-		default:
-			// TODO(W7): fetch from ARM via internal/azure once it exists.
-			return nil, nil, errors.New("policy.source=arm is not supported by this command yet; use `labfw fetch` output with --policy")
 		}
 	}
-	b, _, err := policy.LoadFile(path)
-	if err != nil {
-		return nil, nil, err
+	var b *policy.Bundle
+	if path != "" {
+		lb, _, err := policy.LoadFile(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		b = lb
+	} else {
+		lb, err := fetchBundle(&cfg, slog.New(slog.DiscardHandler))
+		if err != nil {
+			return nil, nil, err
+		}
+		b = lb
 	}
 	leaf := pf.leaf
 	if leaf == "" && pf.policy == "" && cfg.Policy.Source == "arm" {
@@ -138,10 +150,7 @@ func runCompile(args []string, stdout, stderr io.Writer) error {
 		return errUsage
 	}
 	switch *format {
-	case "ir", "diagnostics":
-	case "nft":
-		// TODO(W3): render with internal/render/nft once it is merged.
-		return errors.New("compile: --format nft is not available yet (W3)")
+	case "ir", "diagnostics", "nft":
 	default:
 		return fmt.Errorf("compile: unknown --format %q: %w", *format, errUsage)
 	}
@@ -163,6 +172,18 @@ func runCompile(args []string, stdout, stderr io.Writer) error {
 		if *format == "diagnostics" {
 			return nil
 		}
+	}
+	if *format == "nft" {
+		env, err := nft.EnvFromConfig(&pf.cfg, p)
+		if err != nil {
+			return err
+		}
+		rs, err := nft.Render(p, env, nil)
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(rs)
+		return err
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")

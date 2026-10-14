@@ -752,6 +752,18 @@ using the same managed identity.
 - Local HTTP on `127.0.0.1:9090`: `/healthz`, `/status` (policy name,
   SourceHash, last refresh, diagnostics count, counters), `/metrics`
   (Prometheus text format, hand-written, no client library).
+  `/healthz` always answers 200 with body `ok` or `degraded` (a degraded
+  daemon still enforces the last-known-good policy and must not be
+  restarted for it).
+- Implementation notes: the refresh skips compile when the bundle hash is
+  unchanged, and skips apply when the compiled `SourceHash` equals the
+  enforced one (restart after LKG). The DNS proxy is restarted when the
+  policy's DNS settings (enableProxy, servers) change. The TLS CA is
+  reloaded when the policy's Key Vault reference changes (failed Key Vault
+  fetches are retried at most hourly). DNAT `translatedFqdn` targets are
+  polled every `dns.refreshInterval` and re-rendered on change. Service tags
+  (ARM source) are downloaded at most every 24 h into
+  `stateDir/servicetags.json`; only referenced tags enter the bundle.
 
 ---
 
@@ -796,8 +808,11 @@ network:
   dnatAddressMap: { "*": primary }
   managementSources: [ "203.0.113.10/32" ]
   dnsClients: [ "10.0.0.0/8" ]   # who may use the DNS proxy
+  localIPs: []                   # VM private IPs, primary first; empty = IMDS, then interface addresses
 dns:
   forceEnable: false
+  listen: ":53"
+  upstreams: []                  # overrides policy dnsSettings.servers / Azure DNS (tests)
   minSetTTL: 60s
   maxCacheTTL: 300s
   maxCacheEntries: 4096
@@ -814,6 +829,7 @@ appProxy:
     certCacheSize: 512
     extraRootCAs: []               # PEM files trusted for upstream verification (lab-internal CAs)
     bypassFqdns: []                # never terminated even if a rule says terminateTLS
+    caDownloadListen: ":9091"      # serves /ca.crt; "" = off
 fqdnTags:
   office365: true                  # fetch Office365.* tags from endpoints.office.com
   catalogue: true                  # use the built-in catalogue
@@ -823,10 +839,15 @@ dataplane:
   conntrackMax: 32768
   flowtable: true
   removeOnExit: false
+  skipSysctl: false                # do not write sysctls (namespaced tests)
 runtime:
   goMemLimit: 96MiB                # exported as GOMEMLIMIT; GOGC=50 by default
 logging:
   file: /var/log/labfw/azfw.jsonl
+  stdout: false                    # also write AZFW* lines to stdout (journald)
+  maxSizeMB: 50
+  maxFiles: 5
+  level: info                      # operational (slog) log level
   network: { allowed: true, denied: true }
   application: true
   nat: true
@@ -834,6 +855,9 @@ logging:
 unsupported:
   strict: false
   allowSkippingDenyRules: false
+health:
+  listen: 127.0.0.1:9090           # /healthz, /status, /metrics; "" = off
+stateDir: /var/lib/labfw           # lkg.json, ca.{crt,key}, servicetags.json, o365-endpoints.json
 ```
 
 ---
