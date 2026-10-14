@@ -1,6 +1,17 @@
 // labfw lab deployment (docs/PLAN.md §8): hub VNet with the labfw VM, an
 // optional sample Firewall Policy and an optional test spoke.
 //
+// Two modes:
+//  * isolated (existingHubVnetId = ''): the template creates its own hub VNet,
+//    a spoke route table and (deployTestSpoke) a peered test spoke.
+//  * existing hub (existingHubVnetId set, §8.6): no VNet, spoke, peering or
+//    route table is created. Only the subnet snet-labfw (fwSubnetPrefix, NSG
+//    attached) is added to the existing hub VNet, via a module deployed into
+//    the hub VNet's resource group; the VM, NIC, NSG and public IP live in the
+//    deployment resource group. Spoke subnets are wired separately and
+//    reversibly by .github/workflows/wire-spokes.yml. testVmSubnetId
+//    optionally adds a small E2E test VM in an existing subnet.
+//
 // Deploy at resource-group scope. The VM uses an EXISTING user-assigned
 // managed identity; its role assignments (Reader on the subscription / policy
 // resource groups) are created out of band. This template creates no role
@@ -59,17 +70,26 @@ param keyVaultId string = ''
 @description('Create a Key Vault Secrets User assignment for the identity on keyVaultId.')
 param assignKeyVaultRole bool = false
 
-@description('Hub VNet address space.')
+@description('Resource ID of an EXISTING hub VNet. Set = existing-hub mode: no VNet/spoke/peering/route table is created, only snet-labfw inside this VNet.')
+param existingHubVnetId string = ''
+
+@description('Hub VNet address space (isolated mode only).')
 param hubVnetAddressPrefix string = '10.250.0.0/16'
 
-@description('Firewall subnet (snet-labfw) prefix.')
+@description('Firewall subnet (snet-labfw) prefix. In existing-hub mode it must be free inside the existing hub VNet.')
 param fwSubnetPrefix string = '10.250.0.0/26'
 
 @description('Static private IP of the firewall NIC (inside fwSubnetPrefix).')
 param fwPrivateIp string = '10.250.0.4'
 
-@description('Deploy a peered test spoke with a UDR to the firewall and a small test VM.')
+@description('Prefixes routed through / served by labfw (hub, spokes, on-prem). Added to network.dnsClients and allowed inbound by the NSG. Required in existing-hub mode.')
+param trustedPrefixes string[] = []
+
+@description('Deploy a peered test spoke with a UDR to the firewall and a small test VM (isolated mode only; ignored with existingHubVnetId).')
 param deployTestSpoke bool = true
+
+@description('Resource ID of an EXISTING subnet (e.g. snet-clients) for a small E2E test VM (no public IP) created in this resource group. Empty = no test VM.')
+param testVmSubnetId string = ''
 
 @description('Spoke VNet address space (also added to the DNS proxy clients).')
 param spokeVnetAddressPrefix string = '10.251.0.0/16'
@@ -119,10 +139,19 @@ var fwVmName = '${namePrefix}-fw'
 var archGo = arch == 'arm64' ? 'arm64' : 'amd64'
 var imageSku = arch == 'arm64' ? 'minimal-arm64' : 'minimal'
 var policyId = deploySamplePolicy ? samplePolicy!.outputs.policyId : firewallPolicyId
-var dnsClients = [
-  hubVnetAddressPrefix
-  spokeVnetAddressPrefix
-]
+var existingHub = !empty(existingHubVnetId)
+var hubIdParts = split(existingHubVnetId, '/')
+var deploySpoke = deployTestSpoke && !existingHub
+var deployTestVm = !empty(testVmSubnetId)
+var dnsClients = existingHub
+  ? trustedPrefixes
+  : union(
+      [
+        hubVnetAddressPrefix
+        spokeVnetAddressPrefix
+      ],
+      trustedPrefixes
+    )
 
 var labfwConfig = {
   policy: {
@@ -196,22 +225,25 @@ var sshRule = empty(managementSourceIp)
     ]
 
 // Traffic routed to the NVA keeps its original destination (Internet, other
-// spokes), which the default AllowVnetInBound rule does not cover.
-var forwardRule = [
-  {
-    name: 'allow-forwarded-from-vnets'
-    properties: {
-      priority: 200
-      direction: 'Inbound'
-      access: 'Allow'
-      protocol: '*'
-      sourceAddressPrefixes: dnsClients
-      sourcePortRange: '*'
-      destinationAddressPrefix: '*'
-      destinationPortRange: '*'
-    }
-  }
-]
+// spokes), which the default AllowVnetInBound rule does not cover. The same
+// NSG is attached to the NIC and (existing-hub mode) to snet-labfw.
+var forwardRule = empty(dnsClients)
+  ? []
+  : [
+      {
+        name: 'allow-forwarded-from-vnets'
+        properties: {
+          priority: 200
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefixes: dnsClients
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '*'
+        }
+      }
+    ]
 
 // NSG rule matching the sample policy's DNAT rule (modules/sample-policy.bicep).
 var sampleDnatPort = '8080'
@@ -279,7 +311,8 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
 }
 
 // Spokes send 0.0.0.0/0 here. Never attach it to snet-labfw (§8.1).
-resource routeTable 'Microsoft.Network/routeTables@2024-05-01' = {
+// Existing-hub mode: wire-spokes.yml creates rt-labfw-<target> instead.
+resource routeTable 'Microsoft.Network/routeTables@2024-05-01' = if (!existingHub) {
   name: '${namePrefix}-spoke-rt'
   location: location
   tags: allTags
@@ -298,7 +331,7 @@ resource routeTable 'Microsoft.Network/routeTables@2024-05-01' = {
   }
 }
 
-resource hubVnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
+resource hubVnet 'Microsoft.Network/virtualNetworks@2024-05-01' = if (!existingHub) {
   name: '${namePrefix}-hub-vnet'
   location: location
   tags: allTags
@@ -319,10 +352,23 @@ resource hubVnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   }
 }
 
-resource fwSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
-  parent: hubVnet
-  name: 'snet-labfw'
+// Existing hub: add snet-labfw as a child resource of the existing VNet (other
+// subnets and peerings are not touched), in the VNet's own resource group.
+module hubSubnet 'modules/hub-subnet.bicep' = if (existingHub) {
+  name: '${namePrefix}-hub-subnet'
+  scope: resourceGroup(
+    existingHub ? hubIdParts[2] : subscription().subscriptionId,
+    existingHub ? hubIdParts[4] : resourceGroup().name
+  )
+  params: {
+    vnetName: existingHub ? last(hubIdParts) : ''
+    subnetName: 'snet-labfw'
+    addressPrefix: fwSubnetPrefix
+    nsgId: nsg.id
+  }
 }
+
+var fwSubnetId = existingHub ? hubSubnet!.outputs.subnetId : '${hubVnet.id}/subnets/snet-labfw'
 
 resource nic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
   name: '${namePrefix}-fw-nic'
@@ -341,7 +387,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2024-05-01' = {
           privateIPAllocationMethod: 'Static'
           privateIPAddress: fwPrivateIp
           subnet: {
-            id: fwSubnet.id
+            id: fwSubnetId
           }
           publicIPAddress: {
             id: publicIp.id
@@ -438,13 +484,25 @@ module samplePolicy 'modules/sample-policy.bicep' = if (deploySamplePolicy) {
     tags: allTags
     firewallPublicIp: publicIp.properties.ipAddress
     sourcePrefixes: dnsClients
-    dnatTargetIp: deployTestSpoke ? spokeTestVmIp : fwPrivateIp
+    dnatTargetIp: deploySpoke ? spokeTestVmIp : (deployTestVm ? testVm!.outputs.privateIp : fwPrivateIp)
     dnatSourceAddress: sampleDnatSource
     dnatPort: sampleDnatPort
   }
 }
 
-module spoke 'modules/spoke.bicep' = if (deployTestSpoke) {
+module testVm 'modules/test-vm.bicep' = if (deployTestVm) {
+  name: '${namePrefix}-test-vm'
+  params: {
+    location: location
+    name: '${namePrefix}-test'
+    tags: allTags
+    subnetId: testVmSubnetId
+    adminUsername: adminUsername
+    adminSshPublicKey: adminSshPublicKey
+  }
+}
+
+module spoke 'modules/spoke.bicep' = if (deploySpoke) {
   name: '${namePrefix}-spoke'
   params: {
     location: location
@@ -453,7 +511,7 @@ module spoke 'modules/spoke.bicep' = if (deployTestSpoke) {
     hubVnetId: hubVnet.id
     spokeVnetAddressPrefix: spokeVnetAddressPrefix
     spokeSubnetPrefix: spokeSubnetPrefix
-    routeTableId: routeTable.id
+    routeTableId: routeTable!.id
     dnsServer: fwPrivateIp
     testVmPrivateIp: spokeTestVmIp
     adminUsername: adminUsername
@@ -461,12 +519,12 @@ module spoke 'modules/spoke.bicep' = if (deployTestSpoke) {
   }
 }
 
-resource hubToSpoke 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings@2024-05-01' = if (deployTestSpoke) {
+resource hubToSpoke 'Microsoft.Network/virtualNetworks/virtualNetworkPeerings@2024-05-01' = if (deploySpoke) {
   parent: hubVnet
   name: 'hub-to-spoke'
   properties: {
     remoteVirtualNetwork: {
-      id: deployTestSpoke ? spoke!.outputs.vnetId : ''
+      id: deploySpoke ? spoke!.outputs.vnetId : ''
     }
     allowVirtualNetworkAccess: true
     allowForwardedTraffic: true
@@ -486,7 +544,10 @@ resource uami 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' exis
 
 module kvRole 'modules/keyvault-role.bicep' = if (createKvRole) {
   name: '${namePrefix}-kv-role'
-  scope: resourceGroup(createKvRole ? kvIdParts[2] : subscription().subscriptionId, createKvRole ? kvIdParts[4] : resourceGroup().name)
+  scope: resourceGroup(
+    createKvRole ? kvIdParts[2] : subscription().subscriptionId,
+    createKvRole ? kvIdParts[4] : resourceGroup().name
+  )
   params: {
     keyVaultName: createKvRole ? last(kvIdParts) : ''
     principalId: uami.properties.principalId
@@ -499,6 +560,9 @@ module kvRole 'modules/keyvault-role.bicep' = if (createKvRole) {
 output fwPrivateIp string = fwPrivateIp
 output fwPublicIp string = publicIp.properties.ipAddress
 output vmName string = fwVm.name
-output spokeTestVmName string = deployTestSpoke ? spoke!.outputs.testVmName : ''
+output spokeTestVmName string = deploySpoke ? spoke!.outputs.testVmName : ''
+output testVmName string = deployTestVm ? testVm!.outputs.vmName : ''
+output testVmPrivateIp string = deployTestVm ? testVm!.outputs.privateIp : ''
 output firewallPolicyId string = policyId
-output routeTableId string = routeTable.id
+output fwSubnetId string = fwSubnetId
+output routeTableId string = existingHub ? '' : routeTable.id

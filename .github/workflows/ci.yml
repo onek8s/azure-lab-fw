@@ -58,7 +58,12 @@ jobs:
           az bicep version
           az bicep build --file deploy/bicep/main.bicep --stdout >/dev/null
           az bicep build-params --file deploy/bicep/main.bicepparam --stdout >/dev/null
+          # readEnvironmentVariable() defaults keep this buildable offline;
+          # also build with the optional test VM enabled.
+          az bicep build-params --file deploy/bicep/lab-existing-hub.bicepparam --stdout >/dev/null
+          LABFW_TEST_VM=true az bicep build-params --file deploy/bicep/lab-existing-hub.bicepparam --stdout >/dev/null
           az bicep lint --file deploy/bicep/main.bicep
+          az bicep lint --file deploy/bicep/lab-existing-hub.bicepparam
       - name: shellcheck
         run: |
           mapfile -t scripts < <(git ls-files 'deploy/*.sh' 'scripts/*.sh')

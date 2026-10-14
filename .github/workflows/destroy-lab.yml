@@ -31,9 +31,44 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: refuse while spokes are wired
+        run: |
+          set -euo pipefail
+          # Spoke route tables created by wire-spokes.yml point at the labfw
+          # VM; deleting it first would black-hole those subnets.
+          wired=()
+          while IFS= read -r sub; do
+            mapfile -t ids < <(az resource list --subscription "$sub" --tag managedBy=labfw-wiring \
+              --query "[?type=='Microsoft.Network/routeTables'].id" -o tsv 2>/dev/null || true)
+            wired+=("${ids[@]}")
+          done < <(az account list --query '[].id' -o tsv)
+          if [ "${#wired[@]}" -gt 0 ]; then
+            printf '::error::spoke still wired to labfw: %s\n' "${wired[@]}"
+            echo "Run wire-spokes with action=rollback for every target first." >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: delete tagged resources
         run: |
           set -euo pipefail
+          # Existing-hub mode: snet-labfw (created by the template inside the
+          # existing hub VNet, which cannot carry tags) is found through the
+          # tagged NSG attached to it and deleted once the VM and NIC are gone.
+          delete_labfw_subnets() {
+            local nsg sn
+            while IFS= read -r nsg; do
+              [ -n "$nsg" ] || continue
+              while IFS= read -r sn; do
+                [ -n "$sn" ] || continue
+                if [ "${sn##*/}" = "snet-labfw" ]; then
+                  echo "deleting subnet $sn"
+                  az network vnet subnet delete --ids "$sn" -o none
+                else
+                  echo "::error::tagged NSG $nsg is attached to $sn, which this template does not create; detach it manually"
+                  exit 1
+                fi
+              done < <(az network nsg show --ids "$nsg" --query 'subnets[].id' -o tsv)
+            done < <(tagged Microsoft.Network/networkSecurityGroups)
+          }
           tagged() {
             az resource list -g "$RG" --tag managedBy=labfw-deploy \
               --query "[?type=='$1'].id" -o tsv
@@ -50,6 +85,9 @@ jobs:
             Microsoft.Network/networkSecurityGroups \
             Microsoft.Network/routeTables \
             Microsoft.Network/firewallPolicies; do
+            if [ "$type" = Microsoft.Network/networkSecurityGroups ]; then
+              delete_labfw_subnets
+            fi
             mapfile -t ids < <(tagged "$type")
             if [ "${#ids[@]}" -gt 0 ]; then
               printf 'deleting %s\n' "${ids[@]}"

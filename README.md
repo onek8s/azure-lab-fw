@@ -92,6 +92,80 @@ route table (0.0.0.0/0 → firewall IP) to their workload subnets, peering with
 *allow forwarded traffic* and using the firewall IP as VNet DNS server. Never
 attach that route table to `snet-labfw` itself.
 
+### Existing hub/spoke topology
+
+For an existing hub/spoke network the template does **not** create a hub,
+spoke, peering or route table. With `existingHubVnetId` set it only adds the
+subnet `snet-labfw` (with the labfw NSG) to the existing hub VNet — through a
+module deployed into the hub VNet's resource group, so the VNet's other
+subnets and peerings are untouched — and places the VM, NIC, NSG and public
+IP in the lab resource group. Spokes are then wired one at a time, reversibly,
+by [`wire-spokes.yml`](.github/workflows/wire-spokes.yml)
+([`deploy/scripts/wire-spokes.sh`](deploy/scripts/wire-spokes.sh)).
+Parameters for this lab are in
+[`lab-existing-hub.bicepparam`](deploy/bicep/lab-existing-hub.bicepparam)
+(policy, identity, SSH key and version come from environment variables set
+by the workflow):
+
+| | |
+|---|---|
+| Hub | `vnet-hub-swedencentral` 10.0.0.0/22 (sub-hub `56b07081-…`); `snet-labfw` = **10.0.1.0/26**, labfw = **10.0.1.4**. 10.0.0.0/26 is left free for a future `AzureFirewallSubnet`. |
+| client spoke | `vnet-client-swedencentral` 10.200.0.0/22: `snet-clients`, `snet-loadgen` |
+| mgmt spoke | `vnet-mgmt-swedencentral` 10.0.8.0/22 (sub-mgmt `2e73156d-…`): `snet-runners`, `snet-jump` (the private-endpoint subnets `snet-pe`, `snet-aks-api-pe` are never wired) |
+| `trustedPrefixes` | 10.0.0.0/22, 10.0.8.0/22, 10.200.0.0/22, 172.20.0.0/22, 172.21.0.0/16 → labfw `network.dnsClients` and NSG inbound allow |
+
+Flow:
+
+1. **Bootstrap** (once, [`azure-bootstrap.yml`](.github/workflows/azure-bootstrap.yml)):
+   lab RG `rg-labfw-swedencentral`, VM identity, OIDC app (Owner on the lab
+   RG, Network Contributor on `rg-hub-swedencentral`,
+   `rg-client-swedencentral`, `rg-mgmt-network-swedencentral`) and the
+   repository variables.
+2. **Release** a tag (`release.yml`).
+3. **deploy-lab** with `mode=existing-hub` (default) and optionally
+   `testVm=true` (a B1ls VM without public IP in `snet-clients`, for E2E
+   tests via Run Command). The smoke test fails if labfw is not active —
+   except for releases whose `labfw run` is still unimplemented, which are
+   reported as *skipped* (do not wire spokes with such a release).
+4. **wire-spokes** `target=client action=apply confirm=wire`.
+5. **Validate** from the test VM (`az vm run-command invoke`): allowed and
+   denied flows, labfw logs; the job summary shows the effective routes.
+6. **wire-spokes** `target=mgmt action=apply confirm=wire` (east-west
+   client ↔ mgmt works once both spokes are wired, because the spokes are
+   only peered with the hub).
+7. **Rollback** at any time: **wire-spokes** `action=rollback
+   confirm=rollback` per target; then **destroy-lab** (it refuses to run
+   while any `labfw-wiring` route table still exists, and deletes
+   `snet-labfw` together with the VM).
+
+What `wire-spokes` does (apply):
+
+- **Snapshot first**: each target subnet's route table ID (or none) and the
+  VNet DNS servers go to `snapshot-<target>-<timestamp>.json`, printed in the
+  job summary and uploaded as an artifact (90 days). Rollback snapshots too.
+- **Refuses** (before changing anything) when a target subnet already has a
+  route table that is not tagged `managedBy=labfw-wiring` — foreign UDRs are
+  never overwritten —, when a subnet hosts private endpoints, when no NIC
+  with the firewall IP and IP forwarding exists in the lab RG, or when
+  `setDns` is requested on a VNet with custom DNS servers.
+- Creates `rt-labfw-<target>` (tag `managedBy=labfw-wiring`, BGP propagation
+  on) in the spoke VNet's own resource group and subscription:
+  `0.0.0.0/0` and the other spoke's prefix (client: 10.0.8.0/22, mgmt:
+  10.200.0.0/22) → VirtualAppliance 10.0.1.4; associates it with the target
+  subnets.
+- `setDns` (default **false**): VNet DNS servers = [10.0.1.4]. Not needed
+  for the policy's network rules (IP groups, no FQDNs); VMs only pick it up
+  after a DHCP renew or reboot. **Do not use it for mgmt** unless the
+  private DNS zones its private endpoints rely on are also linked to the hub
+  VNet — otherwise private endpoint names resolve to public IPs.
+
+Rollback detaches only route tables tagged `managedBy=labfw-wiring`,
+deletes `rt-labfw-<target>`, and resets the VNet DNS servers to Azure DNS
+only when they are exactly [firewall IP]. It needs no snapshot (the original
+state for every subnet it touches was "no route table") and is idempotent.
+All workflows run on GitHub-hosted runners, so a rollback stays possible
+even if the self-hosted runners in `snet-runners` lose egress.
+
 Cost: a B1ls lab is roughly $10/month (VM, Standard public IP, Standard SSD)
 versus $290+/month for Azure Firewall Basic — see the table in
 [PLAN §8.5](docs/PLAN.md#85-cost-approximate-pay-as-you-go-verify-with-the-azure-pricing-calculator)

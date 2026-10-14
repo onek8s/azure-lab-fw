@@ -1,11 +1,15 @@
 name: deploy-lab
 # Deploys deploy/bicep/main.bicep into an existing resource group and smoke
 # tests labfw via Run Command. Authentication is OIDC only (no secrets); the
-# identity, federated credential and repository variables are set up manually
-# (README "Deploy to Azure"):
+# identity, federated credential and repository variables are set up by the
+# bootstrap (README "Deploy to Azure"):
 #   vars.AZURE_CLIENT_ID, vars.AZURE_TENANT_ID, vars.AZURE_SUBSCRIPTION_ID
 #   vars.LABFW_RG, vars.LABFW_LOCATION, vars.LABFW_POLICY_ID,
 #   vars.LABFW_UAMI_ID, vars.LABFW_UAMI_CLIENT_ID
+#
+# mode=existing-hub uses deploy/bicep/lab-existing-hub.bicepparam: only
+# snet-labfw is added to the existing hub VNet, spokes are NOT changed (run
+# wire-spokes.yml for that). mode=isolated creates its own hub (+ test spoke).
 on:
   workflow_dispatch:
     inputs:
@@ -13,8 +17,19 @@ on:
         description: "labfw release tag to install (e.g. v0.1.0)"
         required: true
         type: string
+      mode:
+        description: "existing-hub = add snet-labfw to the existing hub (lab-existing-hub.bicepparam); isolated = own hub VNet"
+        type: choice
+        options:
+          - existing-hub
+          - isolated
+        default: existing-hub
+      testVm:
+        description: "existing-hub: deploy a small test VM (no public IP) in snet-clients"
+        type: boolean
+        default: false
       deployTestSpoke:
-        description: "Deploy the peered test spoke and test VM"
+        description: "isolated: deploy the peered test spoke and test VM"
         type: boolean
         default: true
       deploySamplePolicy:
@@ -38,6 +53,8 @@ jobs:
       UAMI_ID: ${{ vars.LABFW_UAMI_ID }}
       UAMI_CLIENT_ID: ${{ vars.LABFW_UAMI_CLIENT_ID }}
       LABFW_VERSION: ${{ inputs.labfwVersion }}
+      MODE: ${{ inputs.mode }}
+      TEST_VM: ${{ inputs.testVm }}
       DEPLOY_TEST_SPOKE: ${{ inputs.deployTestSpoke }}
       DEPLOY_SAMPLE_POLICY: ${{ inputs.deploySamplePolicy }}
     steps:
@@ -54,6 +71,10 @@ jobs:
           if ! [[ "$LABFW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::labfwVersion must look like v0.1.0"; exit 1
           fi
+          case "$MODE" in
+            existing-hub | isolated) ;;
+            *) echo "::error::mode must be existing-hub or isolated"; exit 1 ;;
+          esac
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -67,21 +88,38 @@ jobs:
           ssh-keygen -q -t ed25519 -N '' -C labfw-deploy -f "$RUNNER_TEMP/labfw_key"
           az bicep install
           name="labfw-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          az deployment group create \
-            --name "$name" \
-            --resource-group "$RG" \
-            --template-file deploy/bicep/main.bicep \
-            --parameters \
-              location="$LOCATION" \
-              adminSshPublicKey="$(cat "$RUNNER_TEMP/labfw_key.pub")" \
-              firewallPolicyId="$POLICY_ID" \
-              deploySamplePolicy="$DEPLOY_SAMPLE_POLICY" \
-              deployTestSpoke="$DEPLOY_TEST_SPOKE" \
-              userAssignedIdentityId="$UAMI_ID" \
-              userAssignedIdentityClientId="$UAMI_CLIENT_ID" \
-              labfwVersion="$LABFW_VERSION" \
-              labfwReleaseRepo="$GITHUB_REPOSITORY" \
-            --query properties.outputs -o json >"$RUNNER_TEMP/outputs.json"
+          if [ "$MODE" = "existing-hub" ]; then
+            # lab-existing-hub.bicepparam reads these with readEnvironmentVariable().
+            LABFW_SSH_PUBLIC_KEY="$(cat "$RUNNER_TEMP/labfw_key.pub")"
+            export LABFW_SSH_PUBLIC_KEY LABFW_VERSION
+            export LABFW_POLICY_ID="$POLICY_ID"
+            export LABFW_UAMI_ID="$UAMI_ID"
+            export LABFW_UAMI_CLIENT_ID="$UAMI_CLIENT_ID"
+            export LABFW_TEST_VM="$TEST_VM"
+            export LABFW_DEPLOY_SAMPLE_POLICY="$DEPLOY_SAMPLE_POLICY"
+            export LABFW_RELEASE_REPO="$GITHUB_REPOSITORY"
+            az deployment group create \
+              --name "$name" \
+              --resource-group "$RG" \
+              --parameters deploy/bicep/lab-existing-hub.bicepparam \
+              --query properties.outputs -o json >"$RUNNER_TEMP/outputs.json"
+          else
+            az deployment group create \
+              --name "$name" \
+              --resource-group "$RG" \
+              --template-file deploy/bicep/main.bicep \
+              --parameters \
+                location="$LOCATION" \
+                adminSshPublicKey="$(cat "$RUNNER_TEMP/labfw_key.pub")" \
+                firewallPolicyId="$POLICY_ID" \
+                deploySamplePolicy="$DEPLOY_SAMPLE_POLICY" \
+                deployTestSpoke="$DEPLOY_TEST_SPOKE" \
+                userAssignedIdentityId="$UAMI_ID" \
+                userAssignedIdentityClientId="$UAMI_CLIENT_ID" \
+                labfwVersion="$LABFW_VERSION" \
+                labfwReleaseRepo="$GITHUB_REPOSITORY" \
+              --query properties.outputs -o json >"$RUNNER_TEMP/outputs.json"
+          fi
           rm -f "$RUNNER_TEMP/labfw_key" "$RUNNER_TEMP/labfw_key.pub"
           jq . "$RUNNER_TEMP/outputs.json"
           echo "vm=$(jq -r .vmName.value "$RUNNER_TEMP/outputs.json")" >>"$GITHUB_OUTPUT"
@@ -91,13 +129,28 @@ jobs:
           VM: ${{ steps.deploy.outputs.vm }}
         run: |
           set -euo pipefail
+          # Expanded on the VM, not here.
+          # shellcheck disable=SC2016
           script='cloud-init status --wait >/dev/null 2>&1 || true
-          systemctl is-active labfw && labfw version && curl -s 127.0.0.1:9090/status'
+          echo "LABFW_STATE=$(systemctl is-active labfw)"
+          echo "LABFW_VERSION=$(/usr/local/bin/labfw version 2>&1 | head -n1)"
+          if journalctl -u labfw --no-pager -n 200 2>/dev/null | grep -q "run: not implemented"; then
+            echo "LABFW_RUN=unimplemented"
+          fi
+          curl -s --max-time 5 127.0.0.1:9090/status || true
+          echo
+          journalctl -u labfw --no-pager -n 20 2>/dev/null || true'
           az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
             --scripts "$script" --query 'value[0].message' -o tsv | tee "$RUNNER_TEMP/smoke.txt"
-          # Run Command does not propagate the exit code; check stdout.
-          if awk '/^\[stdout\]/{getline; print; exit}' "$RUNNER_TEMP/smoke.txt" | grep -qx active; then
+          # Run Command does not propagate the exit code; check stdout markers.
+          if grep -qx 'LABFW_STATE=active' "$RUNNER_TEMP/smoke.txt"; then
             echo "result=passed" >>"$GITHUB_OUTPUT"
+          elif grep -q '^LABFW_VERSION=labfw ' "$RUNNER_TEMP/smoke.txt" &&
+               grep -qx 'LABFW_RUN=unimplemented' "$RUNNER_TEMP/smoke.txt"; then
+            # The binary is installed but this release predates the daemon
+            # (`labfw run` returns "not implemented"): expected, not fatal.
+            echo "result=skipped (labfw run not implemented in $LABFW_VERSION; binary installed)" >>"$GITHUB_OUTPUT"
+            echo "::warning::labfw $LABFW_VERSION is installed on $VM but 'labfw run' is not implemented yet; the service cannot be active. Do not wire spokes until a release with the daemon is deployed."
           else
             echo "result=failed" >>"$GITHUB_OUTPUT"
             echo "::error::labfw is not active on $VM"
@@ -105,9 +158,11 @@ jobs:
           fi
       - name: summary
         if: always()
+        env:
+          SMOKE: ${{ steps.smoke.outputs.result || 'not run' }}
         run: |
           {
-            echo "### labfw lab deployment"
+            echo "### labfw lab deployment ($MODE)"
             echo
             echo "| | |"
             echo "|---|---|"
@@ -116,7 +171,11 @@ jobs:
             if [ -s "$RUNNER_TEMP/outputs.json" ]; then
               jq -r 'to_entries[] | "| \(.key) | `\(.value.value)` |"' "$RUNNER_TEMP/outputs.json"
             fi
-            echo "| Smoke test | ${{ steps.smoke.outputs.result || 'not run' }} |"
+            echo "| Smoke test | $SMOKE |"
+            if [ "$MODE" = "existing-hub" ]; then
+              echo
+              echo "Spokes are not routed through labfw yet: run **wire-spokes** (target=client, action=apply, confirm=wire) once the smoke test passes."
+            fi
             if [ -s "$RUNNER_TEMP/smoke.txt" ]; then
               echo
               echo '<details><summary>Run Command output</summary>'

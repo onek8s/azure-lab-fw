@@ -927,6 +927,27 @@ best-effort warnings.
 | Disk | — | Standard SSD 32 GiB ~$2.4/mo |
 | Firewall Policy | free when attached to ≤ 1 firewall; check pricing for standalone | same |
 
+### 8.6 Existing hub/spoke (W10b)
+
+`main.bicep` with `existingHubVnetId` creates no VNet, spoke, peering or route
+table: it adds only `snet-labfw` (`fwSubnetPrefix`, labfw NSG attached) to the
+existing hub VNet through `modules/hub-subnet.bicep`, scoped to the VNet's
+resource group (a subnet child resource; other subnets are untouched). The
+NSG allows inbound from `trustedPrefixes` (also `network.dnsClients`), the
+DNAT ports and SSH only from `managementSourceIp`. `testVmSubnetId` adds a
+B1ls test VM without public IP in an existing subnet. Lab values:
+`deploy/bicep/lab-existing-hub.bicepparam` (snet-labfw 10.0.1.0/26, labfw
+10.0.1.4; 10.0.0.0/26 stays free for `AzureFirewallSubnet`).
+
+Spokes are wired by `wire-spokes.yml` / `deploy/scripts/wire-spokes.sh`:
+snapshot (subnet route tables, VNet DNS) → refuse foreign route tables,
+private-endpoint subnets, a missing forwarding NIC → `rt-labfw-<target>`
+(`managedBy=labfw-wiring`; 0.0.0.0/0 and the other spoke's prefix →
+VirtualAppliance) in the spoke's RG → associate → optional VNet DNS. Rollback
+detaches/deletes only `labfw-wiring` route tables and resets DNS only when it
+is exactly [fwIp]. `destroy-lab.yml` refuses while wiring exists and deletes
+`snet-labfw` via the tagged NSG.
+
 ---
 
 ## 9. Testing

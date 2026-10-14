@@ -1,0 +1,83 @@
+name: wire-spokes
+# Routes an existing spoke through the labfw VM in the existing hub, or rolls
+# that back (docs/PLAN.md §8.6, deploy/scripts/wire-spokes.sh):
+#   client -> vnet-client-swedencentral: snet-clients, snet-loadgen
+#   mgmt   -> vnet-mgmt-swedencentral:   snet-runners, snet-jump (never the PE subnets)
+# apply snapshots the current subnet route tables and VNet DNS servers (job
+# summary + artifact, 90 days), refuses to overwrite route tables it did not
+# create, then attaches rt-labfw-<target>. rollback detaches and deletes it
+# and resets DNS when it points at the firewall. OIDC only.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Spoke to (un)wire"
+        required: true
+        type: choice
+        options:
+          - client
+          - mgmt
+      action:
+        description: "apply = route through labfw; rollback = restore Azure default routing"
+        required: true
+        type: choice
+        options:
+          - apply
+          - rollback
+      setDns:
+        description: "apply: also set the VNet DNS servers to the firewall IP (not needed for IP-group rules; risky for mgmt private endpoints)"
+        type: boolean
+        default: false
+      fwIp:
+        description: "labfw private IP (next hop)"
+        type: string
+        default: "10.0.1.4"
+      confirm:
+        description: 'Type "wire" for apply or "rollback" for rollback'
+        required: true
+        type: string
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab
+  cancel-in-progress: false
+jobs:
+  wire:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    env:
+      TARGET: ${{ inputs.target }}
+      ACTION: ${{ inputs.action }}
+      SET_DNS: ${{ inputs.setDns }}
+      FW_IP: ${{ inputs.fwIp }}
+      CONFIRM: ${{ inputs.confirm }}
+      LAB_RG: ${{ vars.LABFW_RG || 'rg-labfw-swedencentral' }}
+      LOCATION: ${{ vars.LABFW_LOCATION || 'swedencentral' }}
+    steps:
+      - name: check confirmation
+        run: |
+          want=wire
+          [ "$ACTION" = rollback ] && want=rollback
+          if [ "$CONFIRM" != "$want" ]; then
+            echo "::error::confirm must be '$want' for action=$ACTION (got '$CONFIRM'); nothing was changed"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: ${{ inputs.action }} ${{ inputs.target }}
+        run: bash deploy/scripts/wire-spokes.sh
+      - name: upload snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wire-spokes-snapshot-${{ inputs.target }}-${{ inputs.action }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/snapshot-*.json
+            ${{ runner.temp }}/effective-routes-*.txt
+          retention-days: 90
+          if-no-files-found: warn
