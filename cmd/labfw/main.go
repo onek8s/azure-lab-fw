@@ -30,7 +30,7 @@ func commands() []command {
 		{"explain", "explain the decision for a flow", notImplemented("explain")},
 		{"nsg-rules", "print inbound NSG rules required for DNAT", notImplemented("nsg-rules")},
 		{"ca", "TLS inspection CA (ca export)", notImplemented("ca")},
-		{"fqdn-tags", "print the FQDN tag catalogue", notImplemented("fqdn-tags")},
+		{"fqdn-tags", "print the FQDN tag catalogue", runFQDNTags},
 		{"version", "print version", func(_ []string, out, _ io.Writer) error {
 			_, err := fmt.Fprintf(out, "labfw %s (%s)\n", version, commit)
 			return err
