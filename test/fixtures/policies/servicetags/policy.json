@@ -1,0 +1,231 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/servicetags-policy",
+      "name": "servicetags-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Standard"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/servicetags-policy/ruleCollectionGroups/servicetags-rcg"
+          }
+        ]
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/servicetags-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/servicetags-policy/ruleCollectionGroups/servicetags-rcg",
+        "name": "servicetags-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "azure-services",
+              "priority": 100,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "storage-regional",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "Storage.SwedenCentral"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "443"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "keyvault-global",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "AzureKeyVault"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "443"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "mixed-tag-and-ip",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "AzureMonitor",
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "443"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "unknown-tag",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "NoSuchServiceTag"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "443"
+                  ],
+                  "description": "S5: unknown service tag -> compile error for this rule (skipped)"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": [],
+  "serviceTags": {
+    "name": "Public",
+    "id": "/subscriptions/00000000-0000-0000-0000-000000000000/providers/Microsoft.Network/serviceTags/Public",
+    "type": "Microsoft.Network/serviceTags",
+    "changeNumber": "123",
+    "cloud": "Public",
+    "values": [
+      {
+        "name": "Storage",
+        "id": "Storage",
+        "properties": {
+          "changeNumber": "7",
+          "region": "",
+          "systemService": "AzureStorage",
+          "addressPrefixes": [
+            "192.0.2.0/27",
+            "192.0.2.64/27",
+            "2001:db8:1::/48"
+          ],
+          "networkFeatures": [
+            "API",
+            "NSG",
+            "UDR",
+            "FW"
+          ]
+        }
+      },
+      {
+        "name": "Storage.SwedenCentral",
+        "id": "Storage.SwedenCentral",
+        "properties": {
+          "changeNumber": "7",
+          "region": "swedencentral",
+          "systemService": "AzureStorage",
+          "addressPrefixes": [
+            "192.0.2.0/27",
+            "2001:db8:1:1::/64"
+          ],
+          "networkFeatures": [
+            "API",
+            "NSG",
+            "UDR",
+            "FW"
+          ]
+        }
+      },
+      {
+        "name": "Storage.WestEurope",
+        "id": "Storage.WestEurope",
+        "properties": {
+          "changeNumber": "7",
+          "region": "westeurope",
+          "systemService": "AzureStorage",
+          "addressPrefixes": [
+            "192.0.2.64/27"
+          ],
+          "networkFeatures": [
+            "API",
+            "NSG",
+            "UDR",
+            "FW"
+          ]
+        }
+      },
+      {
+        "name": "AzureKeyVault",
+        "id": "AzureKeyVault",
+        "properties": {
+          "changeNumber": "7",
+          "region": "",
+          "systemService": "AzureKeyVault",
+          "addressPrefixes": [
+            "192.0.2.128/28",
+            "192.0.2.160/28"
+          ],
+          "networkFeatures": [
+            "API",
+            "NSG",
+            "UDR",
+            "FW"
+          ]
+        }
+      },
+      {
+        "name": "AzureMonitor",
+        "id": "AzureMonitor",
+        "properties": {
+          "changeNumber": "7",
+          "region": "",
+          "systemService": "AzureMonitor",
+          "addressPrefixes": [
+            "192.0.2.192/26"
+          ],
+          "networkFeatures": [
+            "API",
+            "NSG",
+            "UDR",
+            "FW"
+          ]
+        }
+      }
+    ]
+  }
+}
