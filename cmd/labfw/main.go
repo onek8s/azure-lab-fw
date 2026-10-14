@@ -26,8 +26,8 @@ func commands() []command {
 	return []command{
 		{"run", "run the daemon", notImplemented("run")},
 		{"fetch", "download policy in file-source format", notImplemented("fetch")},
-		{"compile", "compile a policy and print ir|nft|diagnostics", notImplemented("compile")},
-		{"explain", "explain the decision for a flow", notImplemented("explain")},
+		{"compile", "compile a policy and print ir|diagnostics (nft: W3)", runCompile},
+		{"explain", "explain the decision for a flow", runExplain},
 		{"nsg-rules", "print inbound NSG rules required for DNAT", notImplemented("nsg-rules")},
 		{"ca", "TLS inspection CA (ca export)", notImplemented("ca")},
 		{"fqdn-tags", "print the FQDN tag catalogue", runFQDNTags},
