@@ -1,0 +1,235 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy",
+      "name": "basic-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Standard"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy/ruleCollectionGroups/DefaultDnatRuleCollectionGroup"
+          },
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy/ruleCollectionGroups/DefaultNetworkRuleCollectionGroup"
+          },
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy/ruleCollectionGroups/DefaultApplicationRuleCollectionGroup"
+          }
+        ],
+        "dnsSettings": {
+          "servers": [
+            "168.63.129.16"
+          ],
+          "enableProxy": true
+        }
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy/ruleCollectionGroups/DefaultDnatRuleCollectionGroup",
+        "name": "DefaultDnatRuleCollectionGroup",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyNatRuleCollection",
+              "name": "dnat-inbound",
+              "priority": 100,
+              "action": {
+                "type": "DNAT"
+              },
+              "rules": [
+                {
+                  "ruleType": "NatRule",
+                  "name": "ssh-to-jumpbox",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "20.0.0.1"
+                  ],
+                  "destinationPorts": [
+                    "2222"
+                  ],
+                  "translatedPort": "22",
+                  "translatedAddress": "10.1.0.4"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy/ruleCollectionGroups/DefaultNetworkRuleCollectionGroup",
+        "name": "DefaultNetworkRuleCollectionGroup",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 200,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-infra",
+              "priority": 100,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "azure-dns",
+                  "ipProtocols": [
+                    "UDP",
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.0.0.0/8"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "168.63.129.16"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "53"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "ntp",
+                  "ipProtocols": [
+                    "UDP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "*"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "123"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "spoke-to-spoke",
+                  "ipProtocols": [
+                    "Any"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "10.2.0.0/16"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "*"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/basic-policy/ruleCollectionGroups/DefaultApplicationRuleCollectionGroup",
+        "name": "DefaultApplicationRuleCollectionGroup",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 300,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-web",
+              "priority": 100,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "ubuntu-updates",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    },
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "*.ubuntu.com",
+                    "archive.ubuntu.com"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "github",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "github.com",
+                    "*.githubusercontent.com"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": []
+}

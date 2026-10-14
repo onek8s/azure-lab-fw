@@ -1,0 +1,324 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-policy",
+      "name": "unsupported-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Premium"
+        },
+        "threatIntelMode": "Deny",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-policy/ruleCollectionGroups/unsupported-rcg"
+          }
+        ],
+        "threatIntelWhitelist": {
+          "ipAddresses": [
+            "198.51.100.10"
+          ],
+          "fqdns": [
+            "allowed.test"
+          ]
+        },
+        "snat": {
+          "privateRanges": [
+            "IANAPrivateRanges"
+          ],
+          "autoLearnPrivateRanges": "Enabled"
+        },
+        "explicitProxy": {
+          "enableExplicitProxy": true,
+          "httpPort": 8080,
+          "httpsPort": 8443,
+          "enablePacFile": false
+        },
+        "intrusionDetection": {
+          "mode": "Deny",
+          "profile": "Standard",
+          "configuration": {
+            "signatureOverrides": [
+              {
+                "id": "2024897",
+                "mode": "Off"
+              }
+            ],
+            "bypassTrafficSettings": [],
+            "privateRanges": []
+          }
+        },
+        "sql": {
+          "allowSqlRedirect": true
+        },
+        "insights": {
+          "isEnabled": false,
+          "retentionDays": 30
+        },
+        "dnsSettings": {
+          "servers": [
+            "10.0.0.53",
+            "2001:db8::53"
+          ],
+          "enableProxy": true
+        }
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-policy/ruleCollectionGroups/unsupported-rcg",
+        "name": "unsupported-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "network-allow",
+              "priority": 100,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "ipv6-mixed",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16",
+                    "2001:db8:a::/64"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.10",
+                    "2001:db8:b::1"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "443"
+                  ],
+                  "description": "IPv6 entries skipped with warning; IPv4 entries kept"
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "ipv6-only",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "2001:db8:a::/64"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "2001:db8:b::1"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "443"
+                  ],
+                  "description": "all entries IPv6 -> rule matches nothing"
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "wildcard-fqdn",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [
+                    "*.allowed.test"
+                  ],
+                  "destinationPorts": [
+                    "443"
+                  ],
+                  "description": "S14a: wildcard in destinationFqdns invalid -> skipped"
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "app-allow",
+              "priority": 200,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "webcategories-allow",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    },
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [
+                    "Gambling",
+                    "SocialNetworking"
+                  ],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "mssql-allow",
+                  "protocols": [
+                    {
+                      "protocolType": "Mssql",
+                      "port": 1433
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "db.allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "headers-insert",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": [
+                    {
+                      "header": "X-Lab",
+                      "value": "1"
+                    }
+                  ],
+                  "description": "httpHeadersToInsert: warn, rule kept"
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "invalid-fqdn-pattern",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "www.*.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "url-no-terminate",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [
+                    "allowed.test/path"
+                  ],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": [],
+                  "description": "S27: path URL on Https without terminateTLS -> skipped"
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "unknown-fqdn-tag",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    },
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/16"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [],
+                  "fqdnTags": [
+                    "NoSuchFqdnTag"
+                  ],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": []
+}
