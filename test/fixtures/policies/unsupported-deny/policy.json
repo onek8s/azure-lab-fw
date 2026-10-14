@@ -1,0 +1,110 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-deny-policy",
+      "name": "unsupported-deny-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Premium"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-deny-policy/ruleCollectionGroups/unsupported-deny-rcg"
+          }
+        ]
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-deny-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/unsupported-deny-policy/ruleCollectionGroups/unsupported-deny-rcg",
+        "name": "unsupported-deny-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "app-deny",
+              "priority": 100,
+              "action": {
+                "type": "Deny"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "webcategories-deny",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    },
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [
+                    "Gambling"
+                  ],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "app-allow",
+              "priority": 200,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "allow-allowed",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": []
+}

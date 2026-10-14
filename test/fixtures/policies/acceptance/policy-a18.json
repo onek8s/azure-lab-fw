@@ -1,0 +1,659 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy",
+      "name": "lab-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Premium"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy/ruleCollectionGroups/lab-network-rcg"
+          },
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy/ruleCollectionGroups/lab-dnat-rcg"
+          },
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy/ruleCollectionGroups/lab-app-rcg"
+          }
+        ],
+        "basePolicy": {
+          "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-base-policy"
+        },
+        "dnsSettings": {
+          "servers": [
+            "10.0.0.53"
+          ],
+          "enableProxy": true
+        },
+        "transportSecurity": {
+          "certificateAuthority": {
+            "name": "lab-tls-ca",
+            "keyVaultSecretId": "https://kv-lab.vault.azure.net/secrets/lab-tls-ca/"
+          }
+        }
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-base-policy",
+      "name": "lab-base-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Premium"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-base-policy/ruleCollectionGroups/lab-base-rcg"
+          }
+        ]
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy/ruleCollectionGroups/lab-network-rcg",
+        "name": "lab-network-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "deny-a5",
+              "priority": 100,
+              "action": {
+                "type": "Deny"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a5-deny-client2-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-a5",
+              "priority": 110,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a5-allow-client2-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-net",
+              "priority": 300,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a4-allow-east-west",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [],
+                  "sourceIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-client"
+                  ],
+                  "destinationAddresses": [],
+                  "destinationIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-client2"
+                  ],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a6-allow-child-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.11"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a7-allow-fqdn-udp",
+                  "ipProtocols": [
+                    "UDP"
+                  ],
+                  "sourceAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [
+                    "allowed.test"
+                  ],
+                  "destinationPorts": [
+                    "5353"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a14-allow-https-other",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.11"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "443"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a15-allow-udp-echo",
+                  "ipProtocols": [
+                    "UDP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "5353"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a16-allow-any-proto",
+                  "ipProtocols": [
+                    "Any"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "7"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a28-allow-cname-fqdn",
+                  "ipProtocols": [
+                    "UDP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [
+                    "alias.test"
+                  ],
+                  "destinationPorts": [
+                    "5353"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy/ruleCollectionGroups/lab-dnat-rcg",
+        "name": "lab-dnat-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 200,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyNatRuleCollection",
+              "name": "dnat-inbound",
+              "priority": 100,
+              "action": {
+                "type": "DNAT"
+              },
+              "rules": [
+                {
+                  "ruleType": "NatRule",
+                  "name": "a1-dnat-rdp",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "20.0.0.1"
+                  ],
+                  "destinationPorts": [
+                    "3389"
+                  ],
+                  "translatedPort": "3389",
+                  "translatedAddress": "10.1.0.10"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-policy/ruleCollectionGroups/lab-app-rcg",
+        "name": "lab-app-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 300,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-a24-url-no-inspect",
+              "priority": 50,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a24-url-without-terminate",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [
+                    "other.test/ok"
+                  ],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "deny-app",
+              "priority": 100,
+              "action": {
+                "type": "Deny"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a9-a14-deny-other-https",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "other.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-tls-inspect",
+              "priority": 200,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a22-inspect-url-ok",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [
+                    "allowed.test/ok"
+                  ],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": true,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a25-inspect-badcert",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "badcert.allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": true,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a26-inspect-bypass",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "bypass.allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": true,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-web",
+              "priority": 300,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a8-allow-https-allowed",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [],
+                  "sourceIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-client"
+                  ],
+                  "targetFqdns": [
+                    "allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a12-allow-wildcard-http",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "*.allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a21-allow-url-http",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [
+                    "allowed.test/api/v1"
+                  ],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                },
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a27-allow-fqdntag",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    },
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [],
+                  "fqdnTags": [
+                    "LabTag"
+                  ],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-base-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/lab-base-policy/ruleCollectionGroups/lab-base-rcg",
+        "name": "lab-base-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 500,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "base-deny",
+              "priority": 100,
+              "action": {
+                "type": "Deny"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a6-deny-from-base",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.11"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-client",
+      "name": "ipg-client",
+      "type": "Microsoft.Network/IpGroups",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000c1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "ipAddresses": [
+          "10.1.0.0/24"
+        ],
+        "firewalls": [],
+        "firewallPolicies": []
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-client2",
+      "name": "ipg-client2",
+      "type": "Microsoft.Network/IpGroups",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000c1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "ipAddresses": [
+          "10.2.0.0/24"
+        ],
+        "firewalls": [],
+        "firewallPolicies": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,253 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/base-policy",
+      "name": "base-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Standard"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/base-policy/ruleCollectionGroups/base-rcg"
+          }
+        ],
+        "dnsSettings": {
+          "servers": [],
+          "enableProxy": true
+        }
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/child-policy",
+      "name": "child-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Standard"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/child-policy/ruleCollectionGroups/child-network-rcg"
+          },
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/child-policy/ruleCollectionGroups/child-app-rcg"
+          }
+        ],
+        "basePolicy": {
+          "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/base-policy"
+        }
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/base-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/base-policy/ruleCollectionGroups/base-rcg",
+        "name": "base-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 500,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "base-deny",
+              "priority": 100,
+              "action": {
+                "type": "Deny"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "deny-echo-from-base",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.11"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "base-allow-dns",
+              "priority": 200,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "azure-dns",
+                  "ipProtocols": [
+                    "UDP",
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.0.0.0/8"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "168.63.129.16"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "53"
+                  ]
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "base-app-allow",
+              "priority": 300,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "allow-windowsupdate",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    },
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [],
+                  "targetUrls": [],
+                  "fqdnTags": [
+                    "WindowsUpdate"
+                  ],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/child-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/child-policy/ruleCollectionGroups/child-network-rcg",
+        "name": "child-network-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "child-allow",
+              "priority": 100,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "allow-echo-in-child",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.11"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/child-policy/ruleCollectionGroups/child-app-rcg",
+        "name": "child-app-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 200,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "child-app-allow",
+              "priority": 100,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "allow-allowed",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "10.1.0.0/24"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": []
+}
