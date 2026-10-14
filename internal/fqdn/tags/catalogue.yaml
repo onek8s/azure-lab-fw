@@ -1,0 +1,116 @@
+# FQDN tag catalogue (PLAN §5.8) — BEST-EFFORT, VERIFY.
+#
+# Azure Firewall FQDN tags are maintained by Microsoft and their exact
+# contents are not published. The entries below are compiled from public
+# Microsoft documentation describing the endpoints the corresponding service
+# needs; every list cites its source page. They were written without live
+# access to those pages and must be verified against the current
+# documentation before relying on them. Deployments can override or extend
+# any tag with `fqdnTags.extra` in config.yaml (extra wins on conflict).
+#
+# Office365.<ServiceArea>.<Category>.<Required|Optional> tags are NOT listed
+# here: they are resolved at runtime from the Office 365 endpoints web service
+# (https://endpoints.office.com/endpoints/worldwide).
+#
+# Tags deliberately LEFT OUT (no Microsoft document with a reliable FQDN list
+# was available when this file was written; define them via fqdnTags.extra):
+#   - AppServiceEnvironment   (depends on region / storage / SQL endpoints)
+#   - AzureBackup
+#   - HDInsight               (region-specific endpoints)
+#   - Citrix*, Windows365, Intune, CitrixHDXPlusForWindows365 and any other
+#     tag not listed below.
+#
+# Format: tags: { <TagName>: [ <FQDN pattern> ... ] } — patterns use the
+# targetFqdns syntax (PLAN §5.2 S11): exact, "*", "*.domain", "*suffix".
+# Tag names are matched case-insensitively.
+
+tags:
+  # Sources:
+  #   https://learn.microsoft.com/en-us/windows-server/administration/windows-server-update-services/deploy/2-configure-wsus
+  #     ("Configure your firewall to allow your first WSUS server to connect to Microsoft domains on the Internet")
+  #   https://learn.microsoft.com/en-us/windows/deployment/do/waas-delivery-optimization-faq
+  #     ("What hostnames should I allow through my firewall to support Delivery Optimization?")
+  WindowsUpdate:
+    - windowsupdate.microsoft.com
+    - "*.windowsupdate.microsoft.com"
+    - "*.update.microsoft.com"
+    - "*.windowsupdate.com"
+    - download.windowsupdate.com
+    - "*.download.windowsupdate.com"
+    - download.microsoft.com
+    - wustat.windows.com
+    - ntservicepack.microsoft.com
+    - go.microsoft.com
+    - dl.delivery.mp.microsoft.com
+    - "*.delivery.mp.microsoft.com"
+    - "*.dl.delivery.mp.microsoft.com"
+    - "*.prod.do.dsp.mp.microsoft.com"
+    - "*.do.dsp.mp.microsoft.com"
+    - "*.emdl.ws.microsoft.com"
+
+  # Source:
+  #   https://learn.microsoft.com/en-us/windows/privacy/configure-windows-diagnostic-data-in-your-organization
+  #     (section "Endpoints": Connected User Experiences and Telemetry,
+  #      Windows Error Reporting, Online Crash Analysis, settings)
+  WindowsDiagnostics:
+    - v10c.events.data.microsoft.com
+    - v10.events.data.microsoft.com
+    - v10.vortex-win.data.microsoft.com
+    - settings-win.data.microsoft.com
+    - watson.microsoft.com
+    - watson.telemetry.microsoft.com
+    - umwatsonc.events.data.microsoft.com
+    - oca.telemetry.microsoft.com
+    - oca.microsoft.com
+    - kmwatsonc.events.data.microsoft.com
+
+  # Source:
+  #   https://learn.microsoft.com/en-us/defender-endpoint/configure-network-connections-microsoft-defender-antivirus
+  #     (table of URLs required by Microsoft Defender Antivirus cloud protection;
+  #      URL-path entries such as www.microsoft.com/pkiops/* are omitted)
+  MicrosoftActiveProtectionService:
+    - "*.wdcp.microsoft.com"
+    - "*.wdcpalt.microsoft.com"
+    - "*.wd.microsoft.com"
+    - "*.update.microsoft.com"
+    - "*.delivery.mp.microsoft.com"
+    - "*.windowsupdate.com"
+    - go.microsoft.com
+    - definitionupdates.microsoft.com
+    - "*.smartscreen-prod.microsoft.com"
+    - "*.smartscreen.microsoft.com"
+    - "*.checkappexec.microsoft.com"
+    - "*.urs.microsoft.com"
+    - ctldl.windowsupdate.com
+
+  # Source:
+  #   https://learn.microsoft.com/en-us/azure/aks/outbound-rules-control-egress
+  #     ("Azure Global required FQDN / application rules")
+  # [verify] the doc lists "*.hcp.<location>.azmk8s.io"; generalised here to
+  # "*.azmk8s.io" because the catalogue is region-independent.
+  AzureKubernetesService:
+    - "*.azmk8s.io"
+    - mcr.microsoft.com
+    - "*.data.mcr.microsoft.com"
+    - mcr-0001.mcr-msedge.net
+    - management.azure.com
+    - login.microsoftonline.com
+    - packages.microsoft.com
+    - acs-mirror.azureedge.net
+    - packages.aks.azure.com
+
+  # Source:
+  #   https://learn.microsoft.com/en-us/azure/virtual-desktop/required-fqdn-endpoint
+  #     ("Session host virtual machines", Azure cloud; IP-address entries
+  #      169.254.169.254 / 168.63.129.16 are host-local and omitted)
+  WindowsVirtualDesktop:
+    - login.microsoftonline.com
+    - "*.wvd.microsoft.com"
+    - "*.prod.warm.ingest.monitor.core.windows.net"
+    - catalogartifact.azureedge.net
+    - gcs.prod.monitoring.core.windows.net
+    - azkms.core.windows.net
+    - mrsglobalsteus2prod.blob.core.windows.net
+    - wvdportalstorageblob.blob.core.windows.net
+    - oneocsp.microsoft.com
+    - www.microsoft.com
