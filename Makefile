@@ -24,9 +24,11 @@ lint:
 fmt:
 	gofmt -w .
 
-# Privileged network-namespace integration tests (PLAN §9.2). Requires root.
+# Privileged network-namespace integration tests (PLAN §9.2). Requires root,
+# iproute2, nftables and conntrack. NETNS_ARTIFACT_DIR keeps daemon logs.
 test-netns: build
-	$(GO) test -count=1 -tags netns -v ./test/netns/...
+	$(GO) vet -tags netns ./test/netns/...
+	$(GO) test -count=1 -timeout 20m -tags netns -v ./test/netns/...
 
 clean:
 	rm -rf bin dist

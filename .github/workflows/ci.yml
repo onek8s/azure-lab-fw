@@ -22,6 +22,9 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.5.0
+          # config verify downloads the JSON schema; skip it so a slow
+          # golangci-lint.run does not fail CI (the config is linted locally).
+          verify: false
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -34,6 +37,25 @@ jobs:
         run: |
           sudo apt-get install -y -qq nftables conntrack >/dev/null
           sudo -E env "PATH=$PATH" go test -count=1 ./internal/...
+  netns:
+    # Acceptance matrix A1–A28 + randomized differential test in network
+    # namespaces (PLAN §9.2, test/netns).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: install nftables, conntrack, iproute2
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nftables conntrack iproute2 >/dev/null
+      - name: sudo make test-netns
+        run: sudo -E env "PATH=$PATH" NETNS_ARTIFACT_DIR="$RUNNER_TEMP/netns-artifacts" make test-netns
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: netns-daemon-logs
+          path: ${{ runner.temp }}/netns-artifacts
+          retention-days: 7
   build:
     runs-on: ubuntu-24.04
     steps:

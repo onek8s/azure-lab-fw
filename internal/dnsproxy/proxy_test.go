@@ -599,3 +599,18 @@ func TestDefaults(t *testing.T) {
 		t.Fatalf("default upstream = %v", q.cfg.Upstreams)
 	}
 }
+
+func TestBindPairSamePort(t *testing.T) {
+	for range 20 {
+		pc, ln, err := bindPair("127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, l := pc.LocalAddr().(*net.UDPAddr).Port, ln.Addr().(*net.TCPAddr).Port
+		_ = pc.Close()
+		_ = ln.Close()
+		if u != l {
+			t.Fatalf("udp port %d != tcp port %d", u, l)
+		}
+	}
+}
