@@ -29,7 +29,7 @@ func commands() []command {
 		{"compile", "compile a policy and print ir|diagnostics (nft: W3)", runCompile},
 		{"explain", "explain the decision for a flow", runExplain},
 		{"nsg-rules", "print inbound NSG rules required for DNAT", notImplemented("nsg-rules")},
-		{"ca", "TLS inspection CA (ca export)", notImplemented("ca")},
+		{"ca", "TLS inspection CA (ca export)", runCA},
 		{"fqdn-tags", "print the FQDN tag catalogue", runFQDNTags},
 		{"version", "print version", func(_ []string, out, _ io.Writer) error {
 			_, err := fmt.Fprintf(out, "labfw %s (%s)\n", version, commit)
