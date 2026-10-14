@@ -1,0 +1,71 @@
+name: azure-bootstrap
+# One-time (idempotent) bootstrap using the tenant-wide AZURE_OWNER credential:
+#  1. discover the firewall policy and the network topology around it (read-only),
+#  2. create the lab resource group, a user-assigned identity for the labfw VM
+#     (Reader on the subscription: policy + service tags) and a scoped OIDC app
+#     registration for this repository (Owner on the lab RG, Reader on the
+#     subscription, optional Network Contributor on given spoke RGs),
+#  3. store the resulting IDs as repository variables (GH_OWNER token).
+# All other workflows log in with OIDC; AZURE_OWNER is only used here.
+on:
+  workflow_dispatch:
+    inputs:
+      policyName:
+        description: Firewall policy to enforce
+        default: afwp-hub-ext-swedencentral
+      location:
+        default: swedencentral
+      apply:
+        description: "false = discovery only"
+        type: boolean
+        default: true
+      spokeNetworkScopes:
+        description: "Optional: comma-separated resource-group IDs whose VNets/route tables labfw may wire (Network Contributor)"
+        default: ""
+permissions:
+  contents: read
+concurrency:
+  group: azure-bootstrap
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    env:
+      POLICY_NAME: ${{ inputs.policyName }}
+      LOCATION: ${{ inputs.location }}
+      SPOKE_SCOPES: ${{ inputs.spokeNetworkScopes }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: az login (AZURE_OWNER)
+        env:
+          AZURE_OWNER: ${{ secrets.AZURE_OWNER }}
+        run: |
+          test -n "$AZURE_OWNER" || { echo "::error::secret AZURE_OWNER not visible to this repository"; exit 1; }
+          appId=$(jq -r '.appId // .clientId' <<<"$AZURE_OWNER")
+          pw=$(jq -r '.password // .clientSecret' <<<"$AZURE_OWNER")
+          tenant=$(jq -r '.tenant // .tenantId' <<<"$AZURE_OWNER")
+          echo "::add-mask::$pw"
+          az login --service-principal -u "$appId" -p "$pw" --tenant "$tenant" --allow-no-subscriptions -o none
+          echo "TENANT_ID=$tenant" >> "$GITHUB_ENV"
+      - name: discover (read-only)
+        run: bash deploy/scripts/bootstrap-discover.sh
+      - name: bootstrap identities
+        if: ${{ inputs.apply }}
+        run: bash deploy/scripts/bootstrap-identities.sh
+      - name: set repository variables
+        if: ${{ inputs.apply }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_OWNER }}
+        run: |
+          test -n "$GH_TOKEN" || { echo "::error::secret GH_OWNER not visible"; exit 1; }
+          while IFS='=' read -r k v; do
+            [ -n "$k" ] && gh variable set "$k" --repo "$REPO" --body "$v"
+          done < "$RUNNER_TEMP/vars.env"
+          gh api -X PUT "repos/$REPO/environments/azure-lab" >/dev/null
+          gh variable list --repo "$REPO"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bootstrap-discovery
+          path: ${{ runner.temp }}/discovery/
+          retention-days: 30
