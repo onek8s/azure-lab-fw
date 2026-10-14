@@ -47,14 +47,15 @@ for subj in "${subjects[@]}"; do
     params="$(jq -nc --arg n "$name" --arg s "$subj" \
       '{name:$n, issuer:"https://token.actions.githubusercontent.com", subject:$s, audiences:["api://AzureADTokenExchange"]}')"
     # Graph rejects concurrent writes to the same app ("concurrent requests" /
-    # transient "duplicate values"); retry, then confirm by subject.
+    # transient "duplicate values") and lists are eventually consistent:
+    # retry the create; on failure accept a credential that has appeared.
+    created=""
     for attempt in 1 2 3 4 5 6; do
-      az ad app federated-credential create --id "$app_id" -o none --parameters "$params" && break
+      if az ad app federated-credential create --id "$app_id" -o none --parameters "$params"; then created=1; break; fi
       sleep $((attempt * 10))
-      [ -n "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ] && break
+      if [ -n "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ]; then created=1; break; fi
     done
-    [ -n "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ] ||
-      { echo "::error::could not create federated credential for $subj"; exit 1; }
+    [ -n "$created" ] || { echo "::error::could not create federated credential for $subj"; exit 1; }
     sleep 5
   fi
 done
