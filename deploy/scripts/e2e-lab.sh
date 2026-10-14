@@ -487,7 +487,9 @@ echo E2E_DONE"
 			sum "#### AZFW* log lines for $test_ip (\`/var/log/labfw/azfw.jsonl\`, last ${nlines:-?})"
 			sum ""
 			if [ -s "$OUT_DIR/azfw-test-vm.jsonl" ]; then
-				cats="$(jq -r '.Category // empty' "$OUT_DIR/azfw-test-vm.jsonl" 2>/dev/null | sort | uniq -c | awk '{printf "%s%s×%s", (NR > 1 ? ", " : ""), $2, $1}')"
+				# Lines are cut to 300 chars on the VM (not valid JSON), so grep the
+				# Category field (always first) instead of parsing with jq.
+				cats="$(grep -o '^{"Category":"[A-Za-z]*"' "$OUT_DIR/azfw-test-vm.jsonl" | cut -d'"' -f4 | sort | uniq -c | awk '{printf "%s%s×%s", (NR > 1 ? ", " : ""), $2, $1}' || true)"
 				[ -n "$cats" ] && sum "Categories: $cats"
 				sum ""
 				sum '```json'
