@@ -44,8 +44,18 @@ fi
 for subj in "${subjects[@]}"; do
   if [ -z "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ]; then
     name="gh-$(tr -c 'a-zA-Z0-9-\n' '-' <<<"${subj#repo:}" | cut -c1-110)"
-    az ad app federated-credential create --id "$app_id" -o none --parameters "$(jq -nc --arg n "$name" --arg s "$subj" \
+    params="$(jq -nc --arg n "$name" --arg s "$subj" \
       '{name:$n, issuer:"https://token.actions.githubusercontent.com", subject:$s, audiences:["api://AzureADTokenExchange"]}')"
+    # Graph rejects concurrent writes to the same app ("concurrent requests" /
+    # transient "duplicate values"); retry, then confirm by subject.
+    for attempt in 1 2 3 4 5 6; do
+      az ad app federated-credential create --id "$app_id" -o none --parameters "$params" && break
+      sleep $((attempt * 10))
+      [ -n "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ] && break
+    done
+    [ -n "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ] ||
+      { echo "::error::could not create federated credential for $subj"; exit 1; }
+    sleep 5
   fi
 done
 assign "$sp_oid" Owner "$lab_scope"      # create VM etc. and RBAC inside the lab RG only
