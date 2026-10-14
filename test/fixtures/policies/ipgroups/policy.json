@@ -1,0 +1,203 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/ipgroups-policy",
+      "name": "ipgroups-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000a1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Standard"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/ipgroups-policy/ruleCollectionGroups/ipgroups-rcg"
+          }
+        ]
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/ipgroups-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/ipgroups-policy/ruleCollectionGroups/ipgroups-rcg",
+        "name": "ipgroups-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000b1",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyNatRuleCollection",
+              "name": "dnat",
+              "priority": 100,
+              "action": {
+                "type": "DNAT"
+              },
+              "rules": [
+                {
+                  "ruleType": "NatRule",
+                  "name": "rdp-from-admins",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [],
+                  "sourceIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-admins"
+                  ],
+                  "destinationAddresses": [
+                    "20.0.0.1"
+                  ],
+                  "destinationPorts": [
+                    "3389"
+                  ],
+                  "translatedPort": "3389",
+                  "translatedAddress": "10.1.0.10"
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "network",
+              "priority": 200,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "clients-to-servers",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [],
+                  "sourceIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-clients"
+                  ],
+                  "destinationAddresses": [],
+                  "destinationIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-servers"
+                  ],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080",
+                    "9000-9010"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "mixed-sources",
+                  "ipProtocols": [
+                    "UDP"
+                  ],
+                  "sourceAddresses": [
+                    "10.9.0.1"
+                  ],
+                  "sourceIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-clients",
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-admins"
+                  ],
+                  "destinationAddresses": [
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "5353"
+                  ]
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "app",
+              "priority": 300,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "clients-web",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [],
+                  "sourceIpGroups": [
+                    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-clients"
+                  ],
+                  "targetFqdns": [
+                    "allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-clients",
+      "name": "ipg-clients",
+      "type": "Microsoft.Network/IpGroups",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000c1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "ipAddresses": [
+          "10.1.0.0/24",
+          "10.2.0.10",
+          "10.3.0.10-10.3.0.20"
+        ],
+        "firewalls": [],
+        "firewallPolicies": []
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-servers",
+      "name": "ipg-servers",
+      "type": "Microsoft.Network/IpGroups",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000c1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "ipAddresses": [
+          "198.51.100.10",
+          "198.51.100.11"
+        ],
+        "firewalls": [],
+        "firewallPolicies": []
+      }
+    },
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/ipGroups/ipg-admins",
+      "name": "ipg-admins",
+      "type": "Microsoft.Network/IpGroups",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000c1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "ipAddresses": [
+          "203.0.113.0/28"
+        ],
+        "firewalls": [],
+        "firewallPolicies": []
+      }
+    }
+  ]
+}
