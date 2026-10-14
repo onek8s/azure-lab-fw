@@ -38,10 +38,6 @@ func commands() []command {
 	}
 }
 
-func notImplemented(name string) func([]string, io.Writer, io.Writer) error {
-	return func([]string, io.Writer, io.Writer) error { return fmt.Errorf("%s: not implemented yet", name) }
-}
-
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "usage: labfw <command> [flags]\n\ncommands:")
 	for _, c := range commands() {
