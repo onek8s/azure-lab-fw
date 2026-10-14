@@ -131,6 +131,7 @@ type Daemon struct {
 	dnsKey      string
 	caKVID      string
 	caTried     time.Time
+	caGen       atomic.Uint64 // generation of the latest loadCA; stale background loads are dropped
 	imdsMeta    *azure.InstanceMetadata
 
 	bg sync.WaitGroup
@@ -797,8 +798,34 @@ func (d *Daemon) ensureCA(ctx context.Context, p *ir.Policy) {
 }
 
 // loadCA loads the TLS inspection CA (§6.7) and swaps the leaf issuer.
+// Caller holds reloadMu.
+//
+// A Key Vault fetch can take a long time (managed-identity token retries,
+// e.g. when IMDS is unreachable), so it runs in the background: the
+// config/local CA is loaded synchronously first when no issuer exists yet,
+// and the Key Vault CA replaces it once fetched. Holding reloadMu for the
+// fetch would block SIGHUP refreshes, the first "policy applied" and, at
+// start, the health endpoint (A18/A19).
 func (d *Daemon) loadCA(ctx context.Context, kvID string) {
 	d.caKVID, d.caTried = kvID, d.now()
+	gen := d.caGen.Add(1)
+	if kvID == "" || d.azure == nil {
+		d.loadCAFrom(ctx, kvID, gen)
+		return
+	}
+	if !d.issuer.Loaded() {
+		d.loadCAFrom(ctx, "", gen)
+	}
+	bctx := d.runCtx
+	if bctx == nil {
+		bctx = ctx
+	}
+	d.goBG(func() { d.loadCAFrom(bctx, kvID, gen) })
+}
+
+// loadCAFrom performs one CA load and installs it unless a newer loadCA
+// started meanwhile. Safe to call without reloadMu.
+func (d *Daemon) loadCAFrom(ctx context.Context, kvID string, gen uint64) {
 	o := certs.LoadOptions{
 		KeyVaultSecretID: kvID,
 		CAFile:           d.cfg.AppProxy.TLS.CAFile,
@@ -825,6 +852,9 @@ func (d *Daemon) loadCA(ctx context.Context, kvID string) {
 	if err != nil {
 		d.log.Error("TLS inspection CA unusable", "err", err)
 		return
+	}
+	if d.caGen.Load() != gen {
+		return // superseded by a newer policy's CA reference
 	}
 	d.issuer.set(iss)
 	d.stMu.Lock()

@@ -570,9 +570,21 @@ func TestMaxConns(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	c2 := e.dial()
-	if _, err := c2.Read(make([]byte, 1)); err == nil {
-		t.Fatal("second connection not rejected")
+	// On loopback the RST can arrive before connect() returns, so a reset
+	// dial is a rejection too.
+	c2, err := net.Dial("tcp", e.addr)
+	if err == nil {
+		defer c2.Close()
+		_ = c2.SetDeadline(time.Now().Add(10 * time.Second))
+		if _, err := c2.Read(make([]byte, 1)); err == nil {
+			t.Fatal("second connection not rejected")
+		}
+	} else if !errors.Is(err, syscall.ECONNRESET) {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for e.p.Stats().LimitRejects != 1 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
 	if s := e.p.Stats(); s.LimitRejects != 1 || s.TotalConns != 2 {
 		t.Fatalf("stats %+v", s)

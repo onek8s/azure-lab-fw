@@ -1,4 +1,7 @@
 version: "2"
+run:
+  # Also lint the privileged suites behind build tags (test/netns).
+  build-tags: [netns]
 linters:
   default: standard
   enable:

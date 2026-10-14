@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -237,18 +238,9 @@ func (p *Proxy) Start(ctx context.Context) error {
 
 // listen binds UDP and TCP on addr. With port 0, TCP reuses the UDP port.
 func (p *Proxy) listen(addr string) error {
-	pc, err := net.ListenPacket("udp", addr)
+	pc, ln, err := bindPair(addr)
 	if err != nil {
-		return fmt.Errorf("dnsproxy: listen udp %s: %w", addr, err)
-	}
-	tcpAddr := addr
-	if host, port, err := net.SplitHostPort(addr); err == nil && port == "0" {
-		tcpAddr = net.JoinHostPort(host, strconv.Itoa(pc.LocalAddr().(*net.UDPAddr).Port))
-	}
-	ln, err := net.Listen("tcp", tcpAddr)
-	if err != nil {
-		_ = pc.Close()
-		return fmt.Errorf("dnsproxy: listen tcp %s: %w", tcpAddr, err)
+		return err
 	}
 	for _, srv := range []*dns.Server{
 		{PacketConn: pc, Net: "udp", Handler: dns.HandlerFunc(p.serveDNS)},
@@ -268,6 +260,32 @@ func (p *Proxy) listen(addr string) error {
 		<-started
 	}
 	return nil
+}
+
+// bindPair binds UDP and TCP on addr. With port 0 the TCP listener uses the
+// port the kernel chose for UDP; that port may already be taken for TCP
+// (e.g. by an ephemeral outgoing connection), so retry with a new port.
+func bindPair(addr string) (net.PacketConn, net.Listener, error) {
+	host, port, splitErr := net.SplitHostPort(addr)
+	anyPort := splitErr == nil && port == "0"
+	for attempt := 0; ; attempt++ {
+		pc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dnsproxy: listen udp %s: %w", addr, err)
+		}
+		tcpAddr := addr
+		if anyPort {
+			tcpAddr = net.JoinHostPort(host, strconv.Itoa(pc.LocalAddr().(*net.UDPAddr).Port))
+		}
+		ln, err := net.Listen("tcp", tcpAddr)
+		if err == nil {
+			return pc, ln, nil
+		}
+		_ = pc.Close()
+		if !anyPort || attempt >= 9 || !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, nil, fmt.Errorf("dnsproxy: listen tcp %s: %w", tcpAddr, err)
+		}
+	}
 }
 
 // Addrs returns the bound listener addresses (UDP then TCP per Listen entry).
