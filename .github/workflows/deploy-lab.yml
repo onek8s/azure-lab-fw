@@ -25,9 +25,9 @@ on:
           - isolated
         default: existing-hub
       vmSize:
-        description: "Firewall VM size (x64). Standard_B1ls is often capacity-restricted in swedencentral."
+        description: "Firewall/test VM size (x64), or 'auto' = cheapest size with capacity and quota in the region"
         type: string
-        default: Standard_B2ats_v2
+        default: auto
       testVm:
         description: "existing-hub: deploy a small test VM (no public IP) in snet-clients"
         type: boolean
@@ -85,6 +85,16 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: pick VM size
+        if: ${{ inputs.vmSize == 'auto' }}
+        run: |
+          set -euo pipefail
+          count=1
+          if [ "$MODE" = "existing-hub" ] && [ "$TEST_VM" = "true" ]; then count=2; fi
+          if [ "$MODE" = "isolated" ] && [ "$DEPLOY_TEST_SPOKE" = "true" ]; then count=2; fi
+          size="$(LOCATION="$LOCATION" COUNT="$count" bash deploy/scripts/pick-vm-size.sh)"
+          echo "VM_SIZE=$size" >>"$GITHUB_ENV"
+          echo "VM size: \`$size\` (auto)" >>"$GITHUB_STEP_SUMMARY"
       - name: deploy
         id: deploy
         run: |
