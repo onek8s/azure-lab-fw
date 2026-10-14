@@ -128,8 +128,9 @@ Flow:
    except for releases whose `labfw run` is still unimplemented, which are
    reported as *skipped* (do not wire spokes with such a release).
 4. **wire-spokes** `target=client action=apply confirm=wire`.
-5. **Validate** from the test VM (`az vm run-command invoke`): allowed and
-   denied flows, labfw logs; the job summary shows the effective routes.
+5. **Validate** from the test VM: run **e2e-lab** (see
+   [End-to-end check](#end-to-end-check)); wire-spokes' job summary already
+   shows the effective routes.
 6. **wire-spokes** `target=mgmt action=apply confirm=wire` (east-west
    client ↔ mgmt works once both spokes are wired, because the spokes are
    only peered with the hub).
@@ -170,6 +171,38 @@ Cost: a B1ls lab is roughly $10/month (VM, Standard public IP, Standard SSD)
 versus $290+/month for Azure Firewall Basic — see the table in
 [PLAN §8.5](docs/PLAN.md#85-cost-approximate-pay-as-you-go-verify-with-the-azure-pricing-calculator)
 and verify with the Azure pricing calculator.
+
+### End-to-end check
+
+[`e2e-lab.yml`](.github/workflows/e2e-lab.yml)
+([`deploy/scripts/e2e-lab.sh`](deploy/scripts/e2e-lab.sh)) checks the
+deployed lab against the live policy. It is read-only toward Azure except
+`az vm run-command invoke` on `labfw-fw` and `labfw-test`:
+
+1. builds `labfw` from the checked-out commit, exports `vars.LABFW_POLICY_ID`
+   with `scripts/export-policy.sh` and compiles it with the deployment's
+   settings (`dnatAddressMap {"*": primary}`, local IP 10.0.1.4, local CA);
+2. reads the test VM's IP and its NIC's effective routes. Without an active
+   `0.0.0.0/0 → VirtualAppliance 10.0.1.4` (client spoke not wired, test VM
+   missing or stopped) it reports **not wired** and skips the probes — a
+   failure only with `requireWired=true`;
+3. generates up to 25 probes: exact FQDNs/URL hosts of the application rules
+   whose source contains the test VM (wildcards are skipped), up to three
+   network-rule TCP destinations, `https://example.org/` and
+   `http://neverssl.com/`, plus `extraProbes`. They run on the test VM in
+   small Run Command batches; the expected verdict comes from `labfw explain`
+   for the IP the VM resolved. Allow = any HTTP status except 470 (HTTPS with
+   `curl -k`, so TLS inspection does not matter) or a TCP answer; deny = 470,
+   reset or timeout. A TCP allow that times out is only a warning (a silent
+   destination looks like a drop);
+4. shows labfw metrics, the last journal lines and the test VM's
+   `AZFW*` lines from `/var/log/labfw/azfw.jsonl`.
+
+Inputs: `requireWired` (default false) and `extraProbes` (space- or
+newline-separated `https://host/path`, `http://host/path`,
+`tcp://host-or-ip:port`). The job summary has the probe table (rule path,
+expected, observed, PASS/FAIL); the artifact holds `bundle.json`, `ir.json`,
+probes, results and the raw Run Command output. Any mismatch fails the run.
 
 ### Switching to a real Azure Firewall
 
