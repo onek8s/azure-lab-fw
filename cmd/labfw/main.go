@@ -24,9 +24,9 @@ var errUsage = errors.New("usage")
 
 func commands() []command {
 	return []command{
-		{"run", "run the daemon", notImplemented("run")},
-		{"fetch", "download policy in file-source format", notImplemented("fetch")},
-		{"compile", "compile a policy and print ir|diagnostics (nft: W3)", runCompile},
+		{"run", "run the daemon", runRun},
+		{"fetch", "download policy in file-source format", runFetch},
+		{"compile", "compile a policy and print ir|diagnostics|nft", runCompile},
 		{"explain", "explain the decision for a flow", runExplain},
 		{"nsg-rules", "print inbound NSG rules required for DNAT", notImplemented("nsg-rules")},
 		{"ca", "TLS inspection CA (ca export)", runCA},
