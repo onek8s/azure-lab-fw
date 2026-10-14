@@ -222,7 +222,7 @@ type Policy struct {
 }
 
 type RuleRef struct {               // for logs: identical names to Azure logs
-    ID             string           // stable short id: "d12", "n3", "a40" (index-based; used in nft comments & nflog prefix)
+    ID             string           // stable short id: "d12", "n3", "a40" (index of the rule in its stage's evaluation order, counting rules the compiler skipped, so a skipped rule does not renumber the rest; used in nft comments & nflog prefix)
     Policy, RuleCollectionGroup, RuleCollection, Rule string
 }
 
@@ -413,8 +413,10 @@ Compiler behaviour (each emits a `Diagnostic{Severity, RuleRef, Feature, Message
 
 | Feature | Behaviour |
 |---|---|
-| `threatIntelMode` Alert/Deny | warn; ignored (optional blocklist §11) |
-| `intrusionDetection`, `webCategories` | allow-rule: skip rule; deny-rule: error unless `allowSkippingDenyRules` |
+| `threatIntelMode` Deny | warn; ignored (optional blocklist §11) |
+| `threatIntelMode` Alert (Azure default) | info; ignored (no verdict changes, so not a warning — keeps `strict` usable) |
+| `intrusionDetection` (policy-wide, mode ≠ Off) | warn; ignored **[verify]** (it is not a rule, so the allow/deny-rule split does not apply) |
+| `webCategories` | allow-rule: skip rule; deny-rule: error unless `allowSkippingDenyRules` |
 | `terminateTLS: true` with no usable CA (§6.7) | allow-rule: skip rule; deny-rule: error (as above) |
 | `targetUrls` on an HTTPS protocol without `terminateTLS` | see S27 |
 | `fqdnTags` not in the catalogue nor `config.fqdnTags` | as above (unknown tag) |
@@ -423,7 +425,10 @@ Compiler behaviour (each emits a `Diagnostic{Severity, RuleRef, Feature, Message
 | `httpHeadersToInsert` | warn; ignored (stretch: implement for HTTP) |
 | `explicitProxy` | warn; ignored (stretch §11) |
 | `autoLearnPrivateRanges`, `sql`, `insights` | warn; ignored |
-| IPv6 addresses | skip entry with warning |
+| IPv6 addresses | skip entry with warning; a rule whose source/destination field is left with no IPv4 entry (or an empty IP group) can never match and is skipped with a warning (even a deny rule: IPv6 is dropped anyway) |
+| Invalid entries (address, port, protocol, unknown IP group, NAT/filter rule in the wrong collection type) | as for `webCategories` |
+
+Policy settings (`dnsSettings`, `snat`, `threatIntelMode`, `transportSecurity`) are taken from the leaf policy when set there, else from the nearest base policy that sets them **[verify]**. `snat.privateRanges` accepts the keyword `IANAPrivateRanges` (= the defaults of S19).
 
 `labfw compile` prints all diagnostics; `strict: true` makes any warning fatal.
 
@@ -476,7 +481,10 @@ and a CA in `transportSecurity`). The same holds here.
   Clients that pin certificates will fail; that is expected and identical to
   Azure. `appProxy.tls.bypassFqdns` (config, default empty) lists patterns
   never terminated (handled by SNI only), mirroring Azure's TLS-inspection
-  bypass recommendations.
+  bypass recommendations. The proxy evaluates such connections with
+  `eval.Flow.NoTLSInspection=true`: `terminateTLS` is ignored and
+  `targetUrls` entries with a path cannot match (they need the path), so
+  the decision falls to the first rule that matches on SNI alone.
 
 ### 5.8 FQDN tags
 
@@ -1021,6 +1029,7 @@ type Flow struct {
     Src, Dst netip.Addr; Proto ir.Proto; DstPort uint16
     FQDN string; AppType ir.AppType          // SNI / Host; HTTP or HTTPS
     Path string; HasPath bool                // request path when known (HTTP or TLS-inspected); HasPath=false at ClientHello time
+    NoTLSInspection bool                     // S30: decide on SNI only (bypassFqdns / inspection impossible)
     FQDNResolver func(string) []netip.Addr
 }
 type Decision struct {
@@ -1029,6 +1038,12 @@ type Decision struct {
 }
 func Evaluate(p *ir.Policy, f Flow) Decision           // full pipeline (S1)
 func EvaluateApp(p *ir.Policy, f Flow) Decision        // stage 3 only (used by appproxy)
+func DenyBody(d Decision) string                       // S16/S18a 470 body text
+func SNATRequired(p *ir.Policy, dst netip.Addr) bool   // S19
+
+// internal/resolve
+func Compile(b *policy.Bundle, leafPolicyID string, opts Options) (*ir.Policy, error)  // *resolve.Error carries diagnostics
+type Options struct { DNATAddressMap map[string]string; LocalIPs []netip.Addr; TagExpander *fqdn.TagExpander; Unsupported Unsupported; HasCA bool }
 
 // internal/fqdn
 func ParseFQDNPattern(s string) (ir.FQDNPattern, error)
