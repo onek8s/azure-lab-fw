@@ -4,8 +4,9 @@
 cost. It reads an existing **Azure Firewall Policy** (rule collection groups,
 base policies, IP groups, service tags) from the Azure Resource Manager API
 using the VM's managed identity, and enforces the same DNAT, network and
-application rules on a minimal Linux VM with nftables, a DNS proxy and a
-transparent HTTP/TLS (SNI) proxy. The policy stays the source of truth, so
+application rules — including FQDN tags, URL filtering and TLS inspection —
+on a minimal Linux VM (`Standard_B1ls`, 512 MiB) with nftables, a DNS proxy
+and a transparent HTTP/TLS proxy. The policy stays the source of truth, so
 you can switch to a real Azure Firewall later without rewriting rules.
 
 Status: design phase. See [docs/PLAN.md](docs/PLAN.md) for the architecture,

@@ -14,7 +14,8 @@ filtering). Azure Firewall is expensive to leave running (Basic ≈ $290/month,
 Standard ≈ $900/month before data charges — verify current prices).
 
 **azure-lab-fw** (binary name: `labfw`) is a single Go daemon that runs on a
-minimal Linux VM (≈ $10–15/month in total) and:
+minimal Linux VM — **the baseline target is `Standard_B1ls` (1 vCPU,
+512 MiB RAM, ≈ $4/month + IP + disk ≈ $10/month total)** — and:
 
 1. **Reads an existing Azure Firewall Policy** (`Microsoft.Network/firewallPolicies`)
    and its Rule Collection Groups, parent (base) policies, IP Groups and
@@ -25,8 +26,11 @@ minimal Linux VM (≈ $10–15/month in total) and:
 3. **Implements** the same behaviour on the VM:
    - DNAT rules and network rules → **nftables** (kernel data plane).
    - FQDNs in network rules → built-in **DNS proxy** that populates nftables sets.
-   - Application rules (HTTP Host / TLS SNI FQDN filtering) → built-in
-     **transparent proxy**.
+   - Application rules (HTTP Host / TLS SNI FQDN filtering, FQDN tags) →
+     built-in **transparent proxy**.
+   - **URL filtering** (`targetUrls`) and **TLS inspection** (`terminateTLS`,
+     `transportSecurity`) → the same proxy terminates TLS with the policy's
+     CA (from Key Vault, as Azure does) or a locally generated lab CA (§6.7).
    - SNAT behaviour (private ranges) → nftables masquerade.
    - Logs in the **same schema as Azure Firewall resource-specific logs**
      (`AZFWNetworkRule`, `AZFWApplicationRule`, `AZFWNatRule`, `AZFWDnsQuery`).
@@ -37,8 +41,9 @@ minimal Linux VM (≈ $10–15/month in total) and:
 ### 1.1 Non-goals (v1)
 
 - High availability, scale-out, or production use. This is a **lab** tool.
-- Premium features: IDPS, TLS inspection, URL filtering (`targetUrls`),
-  web categories. (Compiler emits warnings, §5.6.)
+- Premium features that need Microsoft-only data: IDPS signatures and web
+  categories. (Compiler emits warnings, §5.6.) TLS inspection and URL
+  filtering **are** in scope (§5.7, §6.7).
 - Microsoft Threat Intelligence feed (not publicly available). An optional
   public blocklist substitute is a stretch goal (§11).
 - IPv6 data plane (IPv4 only; IPv6 forwarding disabled).
@@ -49,8 +54,9 @@ minimal Linux VM (≈ $10–15/month in total) and:
 - A policy authored for Azure Firewall Standard/Basic, using only supported
   features (§5.6), produces the same allow/deny/translate decisions on the
   lab VM for every case in the acceptance matrix (§9.4).
-- Daemon RSS < 64 MiB idle, < 128 MiB under 500 concurrent proxied
-  connections; works on a 1 GiB VM (Standard_B2ats_v2 / Standard_B2pts_v2).
+- Runs on `Standard_B1ls` (512 MiB) within the budget in §12: daemon RSS
+  < 40 MiB idle, < 100 MiB with 256 concurrent proxied connections (50 of
+  them TLS-inspected); whole VM < 350 MiB used, no swap under normal lab load.
 - Policy change in Azure is applied on the VM within `refreshInterval`
   (default 2 min) without dropping established allowed flows.
 - If ARM is unreachable at boot, the last-known-good compiled policy is used.
@@ -67,7 +73,8 @@ minimal Linux VM (≈ $10–15/month in total) and:
   service tags)◀─┼──│ (arm|file)│   │ flatten  │   │ (+eval)│   └──────────────────┘                             │
        ▲ MI token│  └───────────┘   └──────────┘   └───┬────┘                                                    │
        │ (IMDS)  │                                     ├────────▶ dnsproxy  (:53)  ── adds IPs ─▶ nft sets      │
-                 │                                     ├────────▶ appproxy  (:15443, REDIRECT target)            │
+                 │                                     ├────────▶ appproxy  (:15443, REDIRECT target; TLS inspect + URL filter) │
+                 │                                     ├────────▶ certs     (CA from Key Vault or local; leaf cert cache)       │
                  │                                     └────────▶ explain CLI / tests (pure evaluator)          │
                  │  nflog ─▶ logging (AZFW* JSON lines) ─▶ file/journald (optional: Log Analytics)               │
                  └───────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -89,6 +96,10 @@ Key design principles:
    unless `unsupported.allowSkippingDenyRules: true` (because skipping a deny
    rule would be more permissive than Azure).
 5. **Single static binary**, `CGO_ENABLED=0`, linux/amd64 and linux/arm64.
+6. **Fits in 512 MiB / 1 vCPU.** Every component has a memory and CPU budget
+   (§12). Bulk data stays in the kernel (nftables flowtable, `splice(2)` via
+   `io.Copy` on `*net.TCPConn`); user space only touches DNS, proxied
+   application traffic and TLS-inspected bytes.
 
 ### 2.1 Technology choices (decided — do not re-litigate)
 
@@ -103,8 +114,10 @@ Key design principles:
 | Config | YAML (`gopkg.in/yaml.v3`), strict decoding (unknown keys = error) |
 | CLI | stdlib `flag` with subcommands (no cobra) |
 | Infra | Bicep + cloud-init + systemd |
-| OS | Ubuntu Server 24.04 LTS (or Debian 12) — needs kernel nftables with `nat`, `redirect`, set `timeout`, `fib` |
-| VM size | default `Standard_B2ats_v2` (amd64) ; option `Standard_B2pts_v2` (arm64); `Standard_B1ls` works for tiny labs |
+| TLS inspection | Go `crypto/tls` + `crypto/x509`; ECDSA P-256 leaf certs minted on the fly, LRU-cached (§6.7) |
+| Key Vault | Plain REST (`GET {vaultUri}/secrets/{name}?api-version=7.4`) with the managed identity, scope `https://vault.azure.net/.default`; PFX parsed with `software.sslmate.com/src/go-pkcs12` |
+| OS | Ubuntu Server 24.04 LTS **minimal** image (`Canonical:ubuntu-24_04-lts:minimal`) — needs kernel nftables with `nat`, `redirect`, set `timeout`, `fib`, `flowtable` |
+| VM size | **default `Standard_B1ls`** (1 vCPU, 512 MiB, amd64); `Standard_B2ats_v2`/`B2pts_v2` (arm64) for labs with heavy TLS inspection |
 
 ---
 
@@ -121,7 +134,9 @@ internal/eval/                    # pure evaluator implementing §5 (the spec); 
 internal/render/nft/              # IR → nftables text (§6.2); golden-file tested
 internal/dataplane/               # apply ruleset (nft -f), set element updates (netlink), sysctls, conntrack flush
 internal/dnsproxy/                # DNS forwarder + FQDN→nft set population + periodic re-resolution (§6.3)
-internal/appproxy/                # transparent HTTP/TLS proxy (§6.4)
+internal/appproxy/                # transparent HTTP/TLS proxy, URL filtering (§6.4)
+internal/certs/                   # CA loading (Key Vault / local), leaf cert minting + cache (§6.7)
+internal/fqdn/                    # FQDN/URL pattern matching (shared by eval, dnsproxy); FQDN tag catalogue (§5.8)
 internal/logging/                 # AZFW* schemas, NFLOG reader, writers (§6.5)
 internal/daemon/                  # orchestration: refresh loop, reload, health endpoint, signals
 deploy/bicep/                     # main.bicep + modules (§8)
@@ -156,6 +171,8 @@ Endpoints (`https://management.azure.com` + path + `?api-version=…`):
 | Base policy | `properties.basePolicy.id` → recurse (detect cycles, max depth 5) |
 | IP group | `GET {ipGroupId}` → `properties.ipAddresses[]` |
 | Service tags | `GET /subscriptions/{sub}/providers/Microsoft.Network/locations/{region}/serviceTags` → `values[].name`, `values[].properties.addressPrefixes[]` |
+| TLS CA (optional) | `transportSecurity.certificateAuthority.keyVaultSecretId` → `GET <secretId>?api-version=7.4` on the vault (token audience `https://vault.azure.net`); `value` is base64 PFX, `contentType` `application/x-pkcs12` |
+| Office 365 FQDN tags (optional) | `https://endpoints.office.com/endpoints/worldwide?clientrequestid=<uuid>` (§5.8) |
 
 Fields to model (everything else: collect as "unknown" and warn once):
 
@@ -239,14 +256,30 @@ type NetRule struct {
 }
 
 type AppRule struct {
-    Ref        RuleRef
-    Action     Action
-    Src        AddrSet
-    Protocols  []AppProto           // {Type: HTTP|HTTPS, Port uint16}
-    FQDNs      []FQDNPattern        // exact "a.b.c", wildcard "*.b.c", or "*"
-    DstAddrs   AddrSet              // optional; Any if unset
+    Ref          RuleRef
+    Action       Action
+    Src          AddrSet
+    Protocols    []AppProto         // {Type: HTTP|HTTPS, Port uint16}
+    FQDNs        []FQDNPattern      // from targetFqdns + expanded fqdnTags (§5.8)
+    URLs         []URLPattern       // from targetUrls (§5.7)
+    TerminateTLS bool               // terminateTLS
+    DstAddrs     AddrSet            // optional; Any if unset
+}
+
+// FQDNPattern: Kind = Exact | Any ("*") | SubdomainsOnly ("*.b.c") | Suffix ("*b.c")
+type FQDNPattern struct { Kind FQDNKind; Name string }        // Name lower-cased, no trailing dot
+// URLPattern: host part is an FQDNPattern, path is a lower-cased prefix without query string
+type URLPattern struct { Host FQDNPattern; Path string; PathWildcard bool }
+
+type TLSInspection struct {         // Policy.TLS; nil when transportSecurity is unset and no local CA
+    CACert    []byte                // DER
+    CAKey     crypto.Signer         // not serialised to LKG; reloaded from Key Vault / local file
+    Source    string                // "keyvault:<secretId>" | "local"
 }
 ```
+
+`Policy` additionally carries `TLS *TLSInspection` and `FQDNTagSources
+[]string` (diagnostic: which tags came from the catalogue vs. the user map).
 
 ---
 
@@ -298,15 +331,31 @@ tests) in the same PR.
   `{detectedType, originalDstPort}`. (e.g. an `Https:443` rule does not allow
   plaintext HTTP on 443.)
 - **S11** Application rule FQDN: HTTP uses the `Host` header (port stripped),
-  HTTPS uses TLS SNI. Matching is case-insensitive, trailing dot ignored.
-  `*` matches everything. `*.contoso.com` matches any subdomain of
-  `contoso.com` at any depth. **[verify]** whether `*.contoso.com` also
-  matches the apex `contoso.com` — assume **no**.
-- **S12** HTTPS without SNI, or HTTP without `Host` → deny.
+  HTTPS uses TLS SNI (or, when TLS is terminated, the `Host`/`:authority` of
+  the decrypted request, which must match the SNI — mismatch → deny).
+  Matching is case-insensitive, trailing dot ignored, IDNA names compared in
+  A-label (punycode) form. Patterns (`internal/fqdn`):
+  - `*` matches everything.
+  - `*.contoso.com` matches any subdomain at any depth
+    (`a.contoso.com`, `a.b.contoso.com`) but **not** the apex `contoso.com`.
+  - `*contoso.com` (no dot after the star) matches the apex and any name
+    ending in `contoso.com`, including `notcontoso.com`. **[verify]** that
+    Azure supports this form; if not, the resolver rejects it.
+  - A `*` anywhere else (`www.*.com`, `a.*`) is invalid → rule skipped per §5.6.
+  - An FQDN that is an IP literal is allowed and compared as a string.
+- **S12** HTTPS without SNI, or HTTP without `Host` → deny. An HTTP `Host`
+  that is an IP literal matches only rules whose FQDN is that literal.
 - **S13** For HTTP, each request on a keep-alive connection is evaluated
   separately (Host may differ per request).
 - **S14** If an application rule has `destinationAddresses` set, the original
   destination IP must also match.
+- **S14a** Network-rule FQDNs (S7) are exact names only; a wildcard in
+  `destinationFqdns` is invalid → rule skipped per §5.6. A name that resolves
+  to a CNAME chain contributes the final A records. A name with no A records
+  matches nothing (not an error).
+- **S14b** `fqdnTags` in an application rule expand to a list of FQDN
+  patterns (§5.8) and are matched exactly like `targetFqdns`. Azure requires
+  `protocols` to be `Http:80` + `Https:443` for tag rules; we accept any.
 
 ### 5.3 Actions & responses
 
@@ -324,6 +373,11 @@ tests) in the same PR.
   first resolved address (configurable `appProxy.upstreamSelection:
   resolved|original|originalIfResolved`, default `originalIfResolved`, which
   falls back to `resolved`). This prevents SNI/Host spoofing.
+- **S18a** Deny in application stage for a TLS-inspected connection: the
+  client has already completed a TLS handshake with the firewall, so for HTTP
+  requests inside it respond with the same 470 page as S16 (over TLS), then
+  close. **[verify]** Azure behaviour; 470 is assumed because Azure documents
+  the 470 page for TLS-inspected URL denies.
 
 ### 5.4 SNAT
 
@@ -360,15 +414,88 @@ Compiler behaviour (each emits a `Diagnostic{Severity, RuleRef, Feature, Message
 | Feature | Behaviour |
 |---|---|
 | `threatIntelMode` Alert/Deny | warn; ignored (optional blocklist §11) |
-| `intrusionDetection`, `transportSecurity`, `terminateTLS`, `targetUrls`, `webCategories` | allow-rule: skip rule; deny-rule: error unless `allowSkippingDenyRules` |
-| `fqdnTags` | expand from `config.fqdnTags` user map if present, else as above |
+| `intrusionDetection`, `webCategories` | allow-rule: skip rule; deny-rule: error unless `allowSkippingDenyRules` |
+| `terminateTLS: true` with no usable CA (§6.7) | allow-rule: skip rule; deny-rule: error (as above) |
+| `targetUrls` on an HTTPS protocol without `terminateTLS` | see S27 |
+| `fqdnTags` not in the catalogue nor `config.fqdnTags` | as above (unknown tag) |
 | `Mssql` protocol | as above (v1) |
+| Invalid FQDN/URL pattern (S11, S25) | as above |
 | `httpHeadersToInsert` | warn; ignored (stretch: implement for HTTP) |
 | `explicitProxy` | warn; ignored (stretch §11) |
 | `autoLearnPrivateRanges`, `sql`, `insights` | warn; ignored |
 | IPv6 addresses | skip entry with warning |
 
 `labfw compile` prints all diagnostics; `strict: true` makes any warning fatal.
+
+### 5.7 URL filtering & TLS inspection
+
+Azure: `targetUrls` is a Premium feature. For HTTP it works on the request
+line; for HTTPS it requires TLS inspection (`terminateTLS: true` on the rule
+and a CA in `transportSecurity`). The same holds here.
+
+- **S24** URL under test = `<host>` + `<path>` where host is as in S11 (Host
+  header, port stripped) and path is the request-target path **without the
+  query string**, percent-decoded once, `.`/`..` segments normalised,
+  lower-cased for comparison. **[verify]** whether Azure compares the path
+  case-insensitively; assume yes.
+- **S25** `targetUrls` entry syntax: `host[/path]`, no scheme, no port, no
+  query. `host` follows the S11 patterns. `path` is matched as a **segment
+  prefix**: `contoso.com/a/b` matches `/a/b`, `/a/b/`, `/a/b/c`, but not
+  `/a/bc`. A trailing `/*` is accepted and equivalent. A missing path (or
+  `/`) means the whole host — equivalent to `targetFqdns`. A `*` inside the
+  path is invalid. **[verify]** Azure's exact path matching; if it is plain
+  string-prefix, update this statement and the tests.
+- **S26** URL filtering on HTTP (`Http` protocol) needs no TLS inspection
+  and is evaluated per request (S13).
+- **S27** URL filtering on HTTPS requires `terminateTLS: true` on that rule
+  and a usable CA. If the rule has `targetUrls` with a non-empty path but
+  `terminateTLS` is false (or no CA): allow-rule → skip with diagnostic
+  (Azure would not match it either — it cannot see the path); deny-rule →
+  error unless `allowSkippingDenyRules`. Entries whose path is empty are
+  matched on SNI as FQDNs.
+- **S28** TLS inspection applies to a connection when the **first matching
+  rule that could apply by SNI** has `terminateTLS: true`. Precisely: when the
+  ClientHello arrives, evaluate application rules with `FQDN=SNI`,
+  `Path=""`. If the first rule whose host pattern matches has
+  `terminateTLS=true` → terminate TLS and evaluate again per request with the
+  full URL (S24). If it has `terminateTLS=false` → decide on SNI only (allow
+  → splice, deny → S17). If the matching rule is a `terminateTLS` rule with
+  URLs that do not match the request → continue evaluating subsequent rules
+  with the full URL (rules below may still allow/deny by FQDN). Nothing
+  matches → deny (S4/S18a). **[verify]** Azure's exact interleaving; this is
+  the most natural reading of "first match wins" with per-request URL data.
+- **S29** When terminating TLS the firewall connects upstream with its own
+  TLS client, **validating the server certificate** against the system roots
+  (plus `appProxy.tls.extraRootCAs`). Validation failure → deny with reason
+  `TLS upstream certificate invalid` (Azure does this too). Client-facing
+  leaf cert: issued by the policy CA, SANs = SNI, ECDSA P-256, validity
+  24 h, cached (§6.7). Only `http/1.1` is offered in ALPN to the client so
+  requests arrive as HTTP/1.1 (HTTP/2 framing is not parsed in v1).
+- **S30** Protocols that are not HTTP inside the terminated TLS session
+  (e.g. raw TLS-wrapped protocols, WebSocket after Upgrade is fine) → deny.
+  Clients that pin certificates will fail; that is expected and identical to
+  Azure. `appProxy.tls.bypassFqdns` (config, default empty) lists patterns
+  never terminated (handled by SNI only), mirroring Azure's TLS-inspection
+  bypass recommendations.
+
+### 5.8 FQDN tags
+
+Azure FQDN tags (`WindowsUpdate`, `WindowsDiagnostics`,
+`MicrosoftActiveProtectionService`, `AppServiceEnvironment`, `AzureBackup`,
+`AzureKubernetesService`, `HDInsight`, `WindowsVirtualDesktop`,
+`Office365.<Product>.<Category>.<Required|Optional>` …) are maintained by
+Microsoft and not published as lists, except Office 365.
+
+- `internal/fqdn/tags/catalogue.yaml` ships a best-effort list per tag,
+  compiled from Microsoft documentation (each entry cites its source URL in
+  a comment). Agents must not invent entries; unknown → leave the tag out and
+  document it in the catalogue header.
+- `Office365.*` tags are resolved at runtime from the Office 365 endpoints
+  web service (table in §4.1) when `fqdnTags.office365: true` (default
+  true), cached 24 h on disk; service unreachable → use cached, else warn.
+- `config.fqdnTags` overrides/extends catalogue entries.
+- Diagnostics: `info` listing which tags were expanded and how many
+  patterns resulted.
 
 ---
 
@@ -436,13 +563,19 @@ table inet labfw {
     # --- Stage 3: hand candidate app traffic to the proxy (S9) ---
     meta l4proto tcp tcp dport @app_ports_tcp ct mark set 0x3 redirect to :15443
 
-    # --- Default deny (S4) ---
-    ct mark set 0x2 log group 2 prefix "n-default"
+    # --- Default deny (S4); log rate-limited so scans cannot pin the single vCPU (§12.2) ---
+    ct mark set 0x2 limit rate 50/second burst 100 packets log group 2 prefix "n-default"
   }
+
+  # Software flowtable: allowed, established TCP/UDP flows bypass the rest of
+  # the stack (≈ 2× less CPU per packet on 1 vCPU). Enabled by
+  # dataplane.flowtable (default true); omitted if the kernel refuses it.
+  flowtable ft { hook ingress priority 0; devices = { eth0 }; }
 
   chain fwd {
     type filter hook forward priority filter; policy drop;
     ct state invalid drop
+    ct state established ct mark { 0x1, 0x10 } meta l4proto { tcp, udp } flow add @ft
     ct state established,related accept
     ct mark { 0x1, 0x10 } accept
   }
@@ -456,6 +589,7 @@ table inet labfw {
     ct mark 0x3 tcp dport 15443 accept                  # redirected app traffic
     ip saddr @dns_clients meta l4proto { tcp, udp } th dport 53 accept   # only if DNS proxy enabled
     ip saddr @mgmt_src tcp dport 22 accept
+    ip saddr @dns_clients tcp dport 9091 accept         # CA certificate download (§6.7)
     icmp type echo-request limit rate 10/second accept
   }
 
@@ -490,7 +624,8 @@ Rules for the renderer:
 - Applies sysctls at start: `net.ipv4.ip_forward=1`,
   `net.ipv4.conf.{all,default,eth0}.send_redirects=0`,
   `net.ipv4.conf.all.rp_filter=2`, `net.ipv6.conf.all.forwarding=0`,
-  `net.netfilter.nf_conntrack_max` (config, default 65536).
+  `net.netfilter.nf_conntrack_max` (config, default 32768 ≈ 10 MiB kernel
+  memory; §12), `net.netfilter.nf_conntrack_tcp_timeout_established=7200`.
 - Optionally flushes conntrack entries on reload (`dataplane.flushConntrackOnReload`,
   default `false`; when false, established flows keep their old verdict until
   they close — document this).
@@ -510,6 +645,16 @@ Rules for the renderer:
   even for clients that use other resolvers.
 - Index: `map[fqdn][]setName`, rebuilt on every policy reload.
 - Logs every query as `AZFWDnsQuery` when `logging.dns: true`.
+- Also serves as the resolver for the app proxy (S18) and `translatedFqdn`
+  (S23), so all three share one cache. Resolver interface:
+  `Lookup(ctx, name) ([]netip.Addr, ttl, error)`.
+- Memory: cache capped at `dns.maxCacheEntries` (default 4096 ≈ 2 MiB);
+  LRU eviction. Per-FQDN active resolution is batched (max 16 in flight) so
+  a policy with 2 000 FQDNs does not spike goroutines on 1 vCPU.
+- Concern to document in README: with the flowtable/conntrack approach, a
+  client that resolved an FQDN **before** the firewall learned it (e.g. via
+  its own resolver) is denied until the next active resolution (≤ 15 s),
+  same as Azure's documented behaviour for FQDN network rules.
 
 ### 6.4 Application proxy (`internal/appproxy`)
 
@@ -518,18 +663,55 @@ Rules for the renderer:
   `golang.org/x/sys/unix`).
 - Peek the first bytes (timeout `appProxy.firstByteTimeout`, default 10s):
   - `0x16` → parse TLS ClientHello (handle records split across segments, up
-    to 16 KiB) → SNI → evaluate (S10–S12, S14) → on allow, dial upstream
-    (S18), replay peeked bytes, splice both directions with proper half-close.
+    to 16 KiB) → SNI → S28 decides between:
+    - **passthrough**: evaluate (S10–S12, S14) on SNI → on allow, dial
+      upstream (S18), replay peeked bytes, splice both directions with proper
+      half-close (`io.Copy` on `*net.TCPConn` → kernel `splice`, no user-space
+      buffer).
+    - **terminate** (S29): wrap the client conn in `tls.Server` with a
+      `GetCertificate` callback (§6.7), dial upstream with `tls.Client`
+      (`ServerName=SNI`, verify), then run the HTTP path below over the two
+      TLS conns with `IsTlsInspected=true`. `Upgrade`/WebSocket hijacks and
+      splices (user-space copy, 16 KiB buffers from a `sync.Pool`).
   - HTTP method token → serve the connection with a per-request reverse proxy
     (`net/http` server on a single-conn listener + `httputil.ReverseProxy`)
-    so each request is evaluated (S13). Preserve the request as-is (do not
-    add `X-Forwarded-For`; Azure does not for transparent mode **[verify]**).
+    so each request is evaluated (S13, S24–S26). Preserve the request as-is
+    (do not add `X-Forwarded-For`; Azure does not for transparent mode
+    **[verify]**).
   - Anything else → deny (S4).
 - Uses `internal/eval` for decisions — never re-implement matching.
-- Limits: `maxConns` (default 2048), idle timeout (default 5 min), dial
-  timeout 10s. Budget: < 64 KiB buffers per connection.
-- Logs `AZFWApplicationRule` per decision (per request for HTTP).
+- Limits (B1ls defaults, §12): `maxConns` 512, `maxTLSInspectConns` 128
+  (excess connections to terminate-rules are denied with a log entry, not
+  queued), idle timeout 5 min, dial timeout 10s, `ReadHeaderTimeout` 10s,
+  `MaxHeaderBytes` 64 KiB. Budget: < 16 KiB user-space buffers per
+  passthrough conn (ideally zero after splice), ~ 80 KiB per terminated conn
+  (two TLS records buffers + HTTP server state).
+- Logs `AZFWApplicationRule` per decision (per request for HTTP, `TargetUrl`
+  filled when URL filtering or TLS inspection applied).
 - WebSocket / `Upgrade` over HTTP must work (hijack after allow).
+
+### 6.7 Certificates (`internal/certs`)
+
+- **CA source precedence:** (1) policy `transportSecurity.certificateAuthority`
+  → PFX from Key Vault via managed identity (needs `Key Vault Secrets User`
+  on the vault; Bicep assigns it when `keyVaultId` is given); (2)
+  `appProxy.tls.caFile`/`caKeyFile` (PEM) from config; (3) if
+  `appProxy.tls.generateLocalCA: true` (default **true** in the lab
+  deployment), a CA generated once at first start into
+  `/var/lib/labfw/ca.{crt,key}` (ECDSA P-256, 10 years, `CA:TRUE`,
+  pathlen 0). `labfw ca export` prints the CA cert so it can be installed on
+  lab clients; cloud-init also publishes it at `http://<fw>:9091/ca.crt`
+  (serves on the private IP only; `in` chain allows `dns_clients` sources).
+  When the policy references Key Vault but the fetch fails → fall back to
+  (2)/(3) with a `warn` diagnostic, so labs keep working.
+- **Leaf certs:** key = one process-wide ECDSA P-256 key (generated at
+  start; reuse across leaves is fine for a lab and avoids keygen CPU), cert
+  per SNI: SANs = [SNI], validity 24 h, serial random 128-bit, signed by the
+  CA. LRU cache `appProxy.tls.certCacheSize` (default 512 ≈ 1 MiB);
+  `singleflight` so concurrent first requests for the same name mint once.
+  Signing an ECDSA leaf costs ≈ 0.3 ms on a B1ls core — acceptable.
+- Upstream verification: system roots + `extraRootCAs`; TLS 1.2+.
+- The CA private key never leaves the VM and is never written to logs or LKG.
 
 ### 6.5 Logging (`internal/logging`)
 
@@ -539,7 +721,7 @@ existing KQL habits transfer:
 
 - `AZFWNetworkRule`: `TimeGenerated, Protocol, SourceIp, SourcePort, DestinationIp, DestinationPort, Action, Policy, RuleCollectionGroup, RuleCollection, Rule, ActionReason`
 - `AZFWNatRule`: `TimeGenerated, Protocol, SourceIp, SourcePort, DestinationIp, DestinationPort, TranslatedIp, TranslatedPort, Policy, RuleCollectionGroup, RuleCollection, Rule`
-- `AZFWApplicationRule`: `TimeGenerated, Protocol, SourceIp, SourcePort, DestinationPort, Fqdn, TargetUrl, Action, Policy, RuleCollectionGroup, RuleCollection, Rule, ActionReason, IsTlsInspected(false), WebCategory(""), IsExplicitProxyRequest(false)`
+- `AZFWApplicationRule`: `TimeGenerated, Protocol, SourceIp, SourcePort, DestinationPort, Fqdn, TargetUrl, Action, Policy, RuleCollectionGroup, RuleCollection, Rule, ActionReason, IsTlsInspected, WebCategory(""), IsExplicitProxyRequest(false)` — `TargetUrl` is `host/path` when URL data was available (HTTP or TLS-inspected), else empty; `IsTlsInspected` true for S29 connections
 - `AZFWDnsQuery`: `TimeGenerated, SourceIp, SourcePort, QueryId, QueryType, QueryClass, QueryName, Protocol, RequestSize, DnssecOkBit, EDNS0BufferSize, ResponseCode, ResponseFlags, ResponseSize, RequestDurationSecs, ErrorNumber, ErrorMessage`
 
 Each line also has `"Category": "<table name>"`. NFLOG reader parses IPv4/L4
@@ -573,8 +755,14 @@ labfw compile  --config … [--policy file.json] [--format ir|nft|diagnostics]
 labfw explain  --config … [--policy file.json] --src 10.1.0.5 --dst 93.184.216.34 --proto tcp --port 443 [--fqdn www.example.com] [--app https]
                # prints stage, matched rule (Policy/RCG/RC/Rule), action, SNAT/DNAT result
 labfw nsg-rules --config …                            # inbound NSG rules needed for DNAT ports (JSON for Bicep/az CLI)
+labfw ca export [--config …]                         # print the TLS-inspection CA certificate (PEM)
+labfw fqdn-tags [--tag WindowsUpdate]                 # print catalogue contents / what a tag expands to
 labfw version
 ```
+
+`explain` accepts `--url https://www.contoso.com/a/b` (host, path and scheme
+derive `--fqdn`, `--app`, `--port`) and prints whether TLS inspection would
+apply (S28).
 
 `explain` example output:
 
@@ -603,22 +791,37 @@ dns:
   forceEnable: false
   minSetTTL: 60s
   maxCacheTTL: 300s
+  maxCacheEntries: 4096
   refreshInterval: 15s
 appProxy:
   listen: ":15443"
   upstreamSelection: originalIfResolved
-  maxConns: 2048
+  maxConns: 512
+  maxTLSInspectConns: 128
+  tls:
+    generateLocalCA: true          # used when the policy has no transportSecurity or Key Vault is unreachable
+    caFile: ""                     # optional PEM override
+    caKeyFile: ""
+    certCacheSize: 512
+    extraRootCAs: []               # PEM files trusted for upstream verification (lab-internal CAs)
+    bypassFqdns: []                # never terminated even if a rule says terminateTLS
+fqdnTags:
+  office365: true                  # fetch Office365.* tags from endpoints.office.com
+  catalogue: true                  # use the built-in catalogue
+  extra: {}                        # { WindowsUpdate: ["*.update.microsoft.com", ...] } — merged, wins on conflict
 dataplane:
   flushConntrackOnReload: false
-  conntrackMax: 65536
+  conntrackMax: 32768
+  flowtable: true
   removeOnExit: false
+runtime:
+  goMemLimit: 96MiB                # exported as GOMEMLIMIT; GOGC=50 by default
 logging:
   file: /var/log/labfw/azfw.jsonl
   network: { allowed: true, denied: true }
   application: true
   nat: true
   dns: false
-fqdnTags: {}                     # e.g. { WindowsUpdate: ["*.update.microsoft.com", ...] }
 unsupported:
   strict: false
   allowSkippingDenyRules: false
@@ -649,22 +852,31 @@ IP, update DNAT public IPs. No policy change needed.
 
 ### 8.2 Bicep (`deploy/bicep/main.bicep`)
 
-Parameters: `location`, `vmSize` (default `Standard_B2ats_v2`), `arch`
+Parameters: `location`, `vmSize` (default `Standard_B1ls`), `arch`
 (`x64|arm64`, must match size), `adminUsername`, `adminSshPublicKey`,
 `managementSourceIp`, `firewallPolicyId` (existing) **or** `deploySamplePolicy: bool`,
-`hubVnetName/prefix`, `fwSubnetPrefix`, `fwPrivateIp`, `spokeSubnetIds[]`
-(attach route table), `labfwVersion` (GitHub release tag), `useSpot` (default
-false), `dnatPorts[]`.
+`keyVaultId` (optional; vault holding the policy's TLS CA → `Key Vault
+Secrets User` role assignment), `hubVnetName/prefix`, `fwSubnetPrefix`,
+`fwPrivateIp`, `spokeSubnetIds[]` (attach route table), `labfwVersion`
+(GitHub release tag), `useSpot` (default false), `dnatPorts[]`.
 
 Resources: public IP (Standard, static), NSG, NIC (`enableIPForwarding: true`),
-Ubuntu 24.04 VM (Standard SSD OS disk, smallest size; system-assigned MI;
-boot diagnostics managed), role assignments (Reader on the policy's RG and
-subscription-scope Reader or custom serviceTags role), route table, optional
-sample policy with one RCG covering DNAT/network/app rules.
+Ubuntu 24.04 **minimal** VM (Standard SSD 30 GiB OS disk; system-assigned
+MI; boot diagnostics managed), role assignments (Reader on the policy's RG
+and subscription-scope Reader or custom serviceTags role; Key Vault Secrets
+User when `keyVaultId` set), route table, optional sample policy with one RCG
+covering DNAT/network/app rules including a `terminateTLS` + `targetUrls`
+rule (sample policy is Premium tier when `deploySamplePolicyPremium: true`,
+otherwise Standard without the URL rule — Premium-only properties are
+rejected by ARM on a Standard policy).
 
 ### 8.3 cloud-init
 
-1. Install `nftables`, `conntrack` (no other packages needed).
+1. Install `nftables`, `conntrack` (no other packages needed). On B1ls also:
+   remove `snapd`, `unattended-upgrades`, `multipath-tools`, `packagekit`
+   (≈ 100 MiB RAM saved), set `journald` `SystemMaxUse=64M` and
+   `RuntimeMaxUse=16M`, create a 1 GiB swapfile with `vm.swappiness=10`
+   (safety net only; §12 expects no swap use).
 2. Download `labfw_<version>_linux_<arch>.tar.gz` from GitHub releases, verify
    SHA256 from the release `checksums.txt`, install to `/usr/local/bin/labfw`.
 3. Write `/etc/labfw/config.yaml` from Bicep parameters.
@@ -678,13 +890,15 @@ sample policy with one RCG covering DNAT/network/app rules.
 `Type=notify` (or `simple`), `User=labfw`,
 `AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW`,
 `NoNewPrivileges=yes`, `ProtectSystem=strict`, `StateDirectory=labfw`,
-`LogsDirectory=labfw`, `Restart=always`, `MemoryMax=256M`.
+`LogsDirectory=labfw`, `Restart=always`, `MemoryHigh=128M`,
+`MemoryMax=160M`, `Environment=GOMEMLIMIT=96MiB GOGC=50`,
+`LimitNOFILE=16384`.
 
 ### 8.5 Cost (approximate, pay-as-you-go, verify with the Azure pricing calculator)
 
 | Item | Azure Firewall | labfw VM |
 |---|---|---|
-| Compute | Basic ~$0.40/h (~$290/mo); Standard ~$1.25/h (~$910/mo) | B2ats_v2 ~$7/mo; B2pts_v2 ~$6/mo; Spot even less |
+| Compute | Basic ~$0.40/h (~$290/mo); Standard ~$1.25/h (~$910/mo); Premium ~$1.75/h (~$1 280/mo) | **B1ls ~$3.80/mo**; B2ats_v2 ~$7/mo; B2pts_v2 ~$6/mo; Spot even less |
 | Data processed | $0.016–0.065/GB | none (standard bandwidth only) |
 | Public IP | included / extra per IP | ~$3.65/mo per Standard IP |
 | Disk | — | Standard SSD 32 GiB ~$2.4/mo |
@@ -699,10 +913,18 @@ sample policy with one RCG covering DNAT/network/app rules.
 - `policy`: parse every fixture; unknown fields reported.
 - `resolve`: base policy ordering, IP group expansion, service tags, address
   range → prefix conversion, port parsing, diagnostics for §5.6.
-- `eval`: one test per semantic ID (S1–S23), table-driven.
+- `eval`: one test per semantic ID (S1–S30, incl. S14a/S14b/S18a), table-driven.
 - `render/nft`: golden files.
 - `appproxy`: ClientHello parser (fragmented, no SNI, malformed), HTTP Host
-  parsing, decision table using in-memory pipes (`net.Pipe`).
+  parsing, decision table using in-memory pipes (`net.Pipe`); TLS
+  termination against an `httptest.NewTLSServer` upstream with a test CA
+  (allowed URL, denied URL → 470 over TLS, invalid upstream cert → deny,
+  bypass list, HTTP/2 client falls back to 1.1).
+- `fqdn`: pattern parsing/matching table for S11, S25 (apex vs subdomain,
+  `*x` suffix form, IDNA, path segment prefix, query stripping, `..`
+  normalisation); catalogue loads and every entry parses.
+- `certs`: CA generation, PFX parsing (fixture generated with `openssl`),
+  leaf minting (SANs, validity, cache hit/miss, singleflight).
 - `dnsproxy`: snooping index, CNAME chains, TTL clamping (with a fake set writer interface).
 - `azure`: ARM client against `httptest.Server` (paging, 429 Retry-After, base policy recursion, cycle detection).
 
@@ -756,6 +978,15 @@ refreshInterval, tear down.
 | A18 | policy reload removes A3 rule | new connections dropped; existing flow survives (flushConntrackOnReload=false) |
 | A19 | ARM/file source unreadable at boot with LKG present | LKG applied, health=degraded |
 | A20 | IP group in sourceIpGroups | expanded correctly |
+| A21 | HTTP `GET http://allowed.test/api/v1/x`, rule `targetUrls: [allowed.test/api/v1]` | 200 (S25); `GET /api/v10` → 470 (segment prefix) |
+| A22 | HTTPS, rule `targetUrls: [allowed.test/ok]` + `terminateTLS: true`, client trusts lab CA | `/ok/1` → 200 with `IsTlsInspected=true` in log; `/bad` → 470 over TLS (S18a) |
+| A23 | Same as A22 but client does **not** trust the CA | client TLS error (expected); log shows handshake failure |
+| A24 | HTTPS, `targetUrls: [allowed.test/ok]` without `terminateTLS` | rule skipped with diagnostic; connection denied (S27) |
+| A25 | Upstream serves a cert not signed by a trusted root, `terminateTLS` rule | denied, reason `TLS upstream certificate invalid` (S29) |
+| A26 | SNI in `bypassFqdns` + `terminateTLS` rule | passthrough on SNI, `IsTlsInspected=false` (S30) |
+| A27 | `fqdnTags: [LabTag]` from `fqdnTags.extra` | expands, allows listed host, denies others (S14b) |
+| A28 | Network rule FQDN whose answer is a CNAME chain | final A records allowed (S14a) |
+| A29 | Load test on B1ls-equivalent cgroup (1 CPU, 512 MiB): 200 passthrough + 50 inspected connections for 60 s | daemon RSS < 100 MiB, no OOM, no denied-by-limit logs (§12) |
 
 ---
 
@@ -768,14 +999,17 @@ or more PRs; every PR must include tests and keep `go test ./...` green.
 |---|---|---|---|
 | W0 | Skeleton | — | `go.mod` (module `github.com/onek8s/azure-lab-fw`), dir layout §3, `cmd/labfw` with subcommand stubs, `internal/ir` types §4.2 (agreed contract), `internal/config` with strict YAML + defaults, Makefile (`build`, `test`, `lint`, `test-netns`), GitHub Actions CI: `gofmt`, `go vet`, `golangci-lint`, unit tests, cross-build amd64/arm64 |
 | W1 | Policy model & loader | W0 | `internal/policy` structs §4.1, file source, unknown-field detection, 6+ fixtures (basic, inheritance, ipgroups, servicetags, unsupported, acceptance), `scripts/export-policy.sh` |
-| W2 | Resolver + evaluator | W0, W1 fixtures | `internal/resolve`, `internal/eval`, tests `TestS1…TestS23`, `labfw compile --format ir|diagnostics`, `labfw explain` |
+| W2 | Resolver + evaluator | W0, W1 fixtures, W5b | `internal/resolve`, `internal/eval`, tests `TestS1…TestS30`, `labfw compile --format ir|diagnostics`, `labfw explain` |
 | W3 | nft renderer & dataplane | W0 (IR contract) | `internal/render/nft` + goldens, `internal/dataplane` (nft apply, netlink set updates, sysctls), `labfw compile --format nft` |
 | W4 | DNS proxy | W0 | `internal/dnsproxy` §6.3 with interface `SetWriter{Add(set string, ip netip.Addr, ttl time.Duration) error}` |
-| W5 | App proxy | W0, W2 (`eval` API) | `internal/appproxy` §6.4 |
+| W5 | App proxy | W0, W2 (`eval` API) | `internal/appproxy` §6.4 passthrough + HTTP path (no TLS termination yet) |
+| W5b | FQDN & URL matching | W0 | `internal/fqdn` patterns (S11, S25), tag catalogue + Office 365 fetcher (§5.8), `labfw fqdn-tags` |
+| W5c | TLS inspection & URL filtering | W5, W5b, W7 (Key Vault client) | `internal/certs` §6.7, termination path in appproxy (S27–S30), `labfw ca export`, CA download endpoint |
 | W6 | Logging | W0 | `internal/logging` §6.5 incl. NFLOG reader, writers, rotation |
-| W7 | ARM source | W1 | `internal/azure` §6.1, `labfw fetch`, httptest-based tests |
+| W7 | ARM source | W1 | `internal/azure` §6.1 incl. Key Vault secret client, `labfw fetch`, httptest-based tests |
 | W8 | Daemon | W2–W7 | `internal/daemon` §6.6, `labfw run`, health/metrics, LKG |
-| W9 | netns integration | W8 | `test/netns` §9.2, acceptance matrix §9.4, CI job with sudo |
+| W9 | netns integration | W8 | `test/netns` §9.2, acceptance matrix §9.4 (A1–A28), CI job with sudo |
+| W9b | Resource budget | W9 | A29 load test under `systemd-run -p MemoryMax=512M -p CPUQuota=100%`, `/metrics` RSS/goroutine gauges, CI check that fails if idle RSS > 40 MiB |
 | W10 | Deployment | W8 | `deploy/bicep`, `deploy/cloud-init`, `packaging/*`, GoReleaser (or Makefile) release with checksums, `labfw nsg-rules`, README quick start |
 | W11 | Azure E2E | W10 | `test/e2e` + manual workflow §9.3 |
 
@@ -783,10 +1017,28 @@ Interface contracts to agree in W0 (so W2–W6 can proceed independently):
 
 ```go
 // internal/eval
-type Flow struct { Src, Dst netip.Addr; Proto ir.Proto; DstPort uint16; FQDN string; AppType ir.AppType; FQDNResolver func(string) []netip.Addr }
-type Decision struct { Stage Stage; Action ir.Action; Rule *ir.RuleRef; DNAT *DNATResult; SNAT bool; Reason string }
+type Flow struct {
+    Src, Dst netip.Addr; Proto ir.Proto; DstPort uint16
+    FQDN string; AppType ir.AppType          // SNI / Host; HTTP or HTTPS
+    Path string; HasPath bool                // request path when known (HTTP or TLS-inspected); HasPath=false at ClientHello time
+    FQDNResolver func(string) []netip.Addr
+}
+type Decision struct {
+    Stage Stage; Action ir.Action; Rule *ir.RuleRef; DNAT *DNATResult; SNAT bool; Reason string
+    TerminateTLS bool                        // S28: inspect this connection, then call EvaluateApp again per request
+}
 func Evaluate(p *ir.Policy, f Flow) Decision           // full pipeline (S1)
 func EvaluateApp(p *ir.Policy, f Flow) Decision        // stage 3 only (used by appproxy)
+
+// internal/fqdn
+func ParseFQDNPattern(s string) (ir.FQDNPattern, error)
+func ParseURLPattern(s string) (ir.URLPattern, error)
+func (p ir.FQDNPattern) Match(host string) bool
+func (p ir.URLPattern) Match(host, path string) bool
+
+// internal/certs
+type Issuer interface { GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error); CACertPEM() []byte }
+type Resolver interface { Lookup(ctx context.Context, name string) ([]netip.Addr, time.Duration, error) }  // provided by dnsproxy
 
 // internal/render/nft
 func Render(p *ir.Policy, env Env, dyn DynamicSets) ([]byte, error)   // Env: iface, local IPs, proxy port, mgmt/dns sources
@@ -816,8 +1068,59 @@ type Sink interface { Network(NetworkRecord); Nat(NatRecord); App(AppRecord); DN
    honouring `threatIntelWhitelist`.
 2. Explicit proxy (`explicitProxy.httpPort/httpsPort`, PAC file) using the
    same appproxy with `CONNECT` support.
-3. `httpHeadersToInsert` for HTTP.
+3. `httpHeadersToInsert` for HTTP and TLS-inspected HTTPS.
 4. Log Analytics ingestion (DCR + Logs Ingestion API).
-5. Static FQDN tag catalogue (`WindowsUpdate`, `AzureKubernetesService`, …).
-6. Two-NIC mode (separate untrusted/trusted subnets).
-7. Auto-generated NSG rules applied by the daemon (requires Network Contributor — opt-in).
+5. HTTP/2 inside TLS inspection (currently forced to HTTP/1.1 via ALPN).
+6. Web categories via a user-supplied category→pattern map.
+7. Two-NIC mode (separate untrusted/trusted subnets).
+8. Auto-generated NSG rules applied by the daemon (requires Network Contributor — opt-in).
+
+---
+
+## 12. Resource budget for `Standard_B1ls`
+
+B1ls: 1 vCPU (baseline 5 %, bursts on credits; 1 credit/min accrued at
+baseline), **512 MiB RAM**, no local temp disk, 30 GiB Standard SSD OS disk,
+amd64 only. Everything below is a hard requirement; W9b enforces it in CI.
+
+### 12.1 Memory
+
+| Consumer | Budget | How |
+|---|---|---|
+| OS (Ubuntu 24.04 minimal, no snapd, journald capped) | ≤ 160 MiB | cloud-init §8.3 |
+| Kernel conntrack (32 768 entries × ~320 B) | ≈ 10 MiB | `conntrackMax` default |
+| nftables sets (10 k prefixes + 10 k FQDN elements) | < 5 MiB | interval sets, no per-rule duplication of large sets (shared sets for identical lists) |
+| `labfw` idle (IR for 5 000 rules + DNS cache 4 096 + cert cache 512) | ≤ 40 MiB RSS | `GOMEMLIMIT=96MiB`, `GOGC=50`, no `armnetwork` SDK (its models are large), no reflection-heavy YAML at runtime |
+| `labfw` under load (512 passthrough conns, 128 inspected) | ≤ 100 MiB RSS | splice for passthrough; per-inspected-conn ≈ 80 KiB × 128 ≈ 10 MiB; `sync.Pool` 16 KiB buffers; `maxConns` enforced with immediate deny beyond limit |
+| Headroom / page cache | ≥ 150 MiB | `MemoryMax=160M` on the unit so a leak cannot take the VM down; OOM-kill restarts the daemon with the **ruleset still loaded** (fail-closed) |
+
+### 12.2 CPU
+
+- Allowed network flows: handled in kernel via flowtable after the first
+  packet; no per-packet user-space work.
+- Passthrough TLS: SNI parse once, then `splice`; CPU ≈ 0.
+- TLS inspection: ~2 TLS handshakes + 2× AES-GCM per byte; on a B1ls this
+  sustains roughly 50–100 Mbit/s before exhausting credits — document in
+  README that inspection is for lab-scale traffic. Leaf certs are cached;
+  one shared leaf key avoids ECDSA keygen per host.
+- Policy compile: 5 000 rules must compile + render + `nft -f` in < 2 s;
+  reloads happen only on `SourceHash` change.
+- DNS active resolution: ≤ 16 concurrent queries, spread evenly over
+  `dns.refreshInterval`, never a burst at interval boundaries.
+- Logging: NFLOG with `queue-threshold 32`, log lines buffered and written
+  in batches; default-deny logging rate-limited by `limit rate 50/second
+  burst 100 packets` in nft so a port scan cannot pin the CPU.
+
+### 12.3 Disk
+
+- Binary ≈ 15 MiB. Logs rotated at 50 MiB × 5 files. LKG < 5 MiB.
+  Office 365 cache < 1 MiB. Journald ≤ 64 MiB.
+
+### 12.4 Verification
+
+- `make bench-b1ls`: runs the netns suite inside
+  `systemd-run --scope -p MemoryMax=512M -p CPUQuota=100%` with A29 and
+  prints peak RSS from `/metrics`. CI fails if idle RSS > 40 MiB or A29 peak
+  > 100 MiB.
+- E2E (§9.3) deploys on an actual B1ls and runs the matrix; the workflow
+  records `free -m` and CPU credit balance before/after.
