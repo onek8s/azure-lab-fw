@@ -28,7 +28,7 @@ func commands() []command {
 		{"fetch", "download policy in file-source format", runFetch},
 		{"compile", "compile a policy and print ir|diagnostics|nft", runCompile},
 		{"explain", "explain the decision for a flow", runExplain},
-		{"nsg-rules", "print inbound NSG rules required for DNAT", notImplemented("nsg-rules")},
+		{"nsg-rules", "print inbound NSG rules required for DNAT", runNSGRules},
 		{"ca", "TLS inspection CA (ca export)", runCA},
 		{"fqdn-tags", "print the FQDN tag catalogue", runFQDNTags},
 		{"version", "print version", func(_ []string, out, _ io.Writer) error {
@@ -36,10 +36,6 @@ func commands() []command {
 			return err
 		}},
 	}
-}
-
-func notImplemented(name string) func([]string, io.Writer, io.Writer) error {
-	return func([]string, io.Writer, io.Writer) error { return fmt.Errorf("%s: not implemented yet", name) }
 }
 
 func usage(w io.Writer) {

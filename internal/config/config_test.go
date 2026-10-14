@@ -43,6 +43,24 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// deploy/bicep/main.bicep renders the config with string() (JSON, which is
+// valid YAML); this is the shape it produces.
+func TestParseBicepJSON(t *testing.T) {
+	js := `{"policy":{"source":"arm","resourceId":"/subscriptions/s/resourceGroups/r/providers/Microsoft.Network/firewallPolicies/p"},` +
+		`"azure":{"clientId":"00000000-0000-0000-0000-000000000001"},` +
+		`"network":{"interface":"eth0","dnatAddressMap":{"*":"primary"},"managementSources":[],` +
+		`"dnsClients":["10.250.0.0/16","10.251.0.0/16"],"localIPs":["10.250.0.4"]},` +
+		`"dns":{"forceEnable":true},"appProxy":{"tls":{"generateLocalCA":true}},"dataplane":{"skipSysctl":true}}`
+	c, err := Parse([]byte(js))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Dataplane.SkipSysctl || !c.DNS.ForceEnable || c.Azure.ClientID == "" ||
+		len(c.Network.DNSClients) != 2 || c.AppProxy.MaxConns != 512 || c.DNS.Listen != ":53" {
+		t.Fatalf("unexpected config: %+v", c)
+	}
+}
+
 func TestParsePrefix(t *testing.T) {
 	p, err := ParsePrefix("10.1.2.3")
 	if err != nil || p.String() != "10.1.2.3/32" {
