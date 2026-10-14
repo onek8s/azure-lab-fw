@@ -1022,6 +1022,14 @@ flows over fixture policy, compare data plane vs `eval`.
 `az vm run-command`, change a rule in the policy, verify reload within
 refreshInterval, tear down.
 
+Implemented for the existing-hub lab by `e2e-lab.yml`
+(`deploy/scripts/e2e-lab.sh`, W11): read-only except Run Command on the
+labfw and test VMs; exports the live policy, detects whether the client
+spoke is wired (test VM NIC effective routes), probes exact FQDNs and
+network-rule destinations generated from the IR from the test VM and
+compares each result with `labfw explain`; shows labfw metrics, journal and
+the test VM's AZFW* log lines (README "End-to-end check").
+
 ### 9.4 Acceptance matrix (must pass in §9.2; fixture `test/fixtures/policies/acceptance/`)
 
 | # | Flow | Expected |

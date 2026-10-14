@@ -1,0 +1,70 @@
+name: e2e-lab
+# End-to-end check of the deployed lab (docs/PLAN.md §9.3, README
+# "End-to-end check", deploy/scripts/e2e-lab.sh): exports the live policy,
+# compiles it with labfw built from this commit, probes allowed and denied
+# flows from the test VM via Run Command and compares every result with
+# `labfw explain`; also shows labfw metrics, journal and the AZFW* log lines
+# of the test VM. READ-ONLY toward Azure except `az vm run-command invoke` on
+# labfw-fw and labfw-test. OIDC only.
+on:
+  workflow_dispatch:
+    inputs:
+      requireWired:
+        description: "Fail when the client spoke is not routed through labfw (default: report 'not wired' and skip the probes)"
+        type: boolean
+        default: false
+      extraProbes:
+        description: "Additional probes, one per line (or space-separated): https://host/path, http://host/path, tcp://ip-or-host:port"
+        type: string
+        required: false
+        default: ""
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab
+  cancel-in-progress: false
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    timeout-minutes: 45
+    env:
+      LABFW_POLICY_ID: ${{ vars.LABFW_POLICY_ID }}
+      LAB_RG: ${{ vars.LABFW_RG || 'rg-labfw-swedencentral' }}
+      FW_VM: labfw-fw
+      TEST_VM: labfw-test
+      FW_IP: "10.0.1.4"
+      REQUIRE_WIRED: ${{ inputs.requireWired }}
+      EXTRA_PROBES: ${{ inputs.extraProbes }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build labfw
+        run: |
+          set -euo pipefail
+          if [ -z "$LABFW_POLICY_ID" ]; then
+            echo "::error::repository variable LABFW_POLICY_ID is not set"; exit 1
+          fi
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/labfw" ./cmd/labfw
+          "$RUNNER_TEMP/labfw" version
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: end-to-end check
+        env:
+          LABFW_BIN: ${{ runner.temp }}/labfw
+          OUT_DIR: ${{ runner.temp }}/e2e
+        run: bash deploy/scripts/e2e-lab.sh
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-lab-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e
+          retention-days: 30
+          if-no-files-found: warn
