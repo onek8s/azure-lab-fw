@@ -754,7 +754,15 @@ func TestS29_UpstreamCertificateInvalid(t *testing.T) {
 }
 
 func TestS30_BypassListPassthrough(t *testing.T) {
-	e := newEnv(t, inspectTable(), func(o *Options) { o.Config.TLS.BypassFQDNs = []string{"*.contoso.test"} })
+	tb := inspectTable()
+	e := newEnv(t, tb, func(o *Options) { o.Config.TLS.BypassFQDNs = []string{"*.contoso.test"} })
+	defer func() {
+		// The decision is taken with NoTLSInspection (PLAN §5.7 S30).
+		fl := tb.seen()
+		if len(fl) == 0 || !fl[0].NoTLSInspection {
+			t.Errorf("flows %+v: want NoTLSInspection on the bypassed ClientHello", fl)
+		}
+	}()
 	up := tlsUpstream(t, e.upIss, "www.contoso.test", hello("up"))
 	e.setOrig(up.Listener.Addr().String())
 	resp, err := e.client(&tls.Config{RootCAs: e.upstreamRoots()}, false).Get("https://www.contoso.test/anything")

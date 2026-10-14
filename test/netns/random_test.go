@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onek8s/azure-lab-fw/internal/appproxy"
 	"github.com/onek8s/azure-lab-fw/internal/config"
 	"github.com/onek8s/azure-lab-fw/internal/eval"
 	"github.com/onek8s/azure-lab-fw/internal/fqdn"
@@ -133,10 +134,10 @@ func expect(p *ir.Policy, cfg *config.Config, f randFlow) eval.Decision {
 		fl.AppType, fl.FQDN, fl.Path, fl.HasPath = ir.AppHTTP, host, f.path, true
 	case "https":
 		fl.AppType, fl.FQDN = ir.AppHTTPS, f.host
-		for _, b := range cfg.AppProxy.TLS.BypassFQDNs {
-			if pat, err := fqdn.ParseFQDNPattern(b); err == nil && fqdn.MatchFQDN(pat, f.host) {
-				fl.NoTLSInspection = true
-			}
+		// Same bypassFqdns matching as the proxy and `labfw explain` (S30).
+		bypass, _ := appproxy.ParseBypassList(cfg.AppProxy.TLS.BypassFQDNs)
+		if h, err := fqdn.NormalizeHost(f.host); err == nil {
+			fl.NoTLSInspection = bypass.Match(h)
 		}
 	}
 	d := eval.Evaluate(p, fl)

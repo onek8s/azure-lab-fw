@@ -51,11 +51,42 @@ jobs:
       - name: sudo make test-netns
         run: sudo -E env "PATH=$PATH" NETNS_ARTIFACT_DIR="$RUNNER_TEMP/netns-artifacts" make test-netns
       - if: failure()
+        name: make logs readable
+        # Written by root (sudo make); the upload action runs as the runner user.
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/netns-artifacts" || true
+      - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: netns-daemon-logs
           path: ${{ runner.temp }}/netns-artifacts
           retention-days: 7
+  budget:
+    # Resource budget for Standard_B1ls (PLAN §12.4, acceptance A29): load
+    # test with the daemon in a systemd scope (MemoryMax=512M,
+    # CPUQuota=100%). Fails if idle RSS >= 40 MiB or peak RSS >= 100 MiB.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: install nftables, conntrack, iproute2
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq nftables conntrack iproute2 >/dev/null
+      - name: sudo make bench-b1ls
+        run: sudo -E env "PATH=$PATH" NETNS_LOAD_SECONDS=30 NETNS_ARTIFACT_DIR="$RUNNER_TEMP/budget-artifacts" make bench-b1ls
+      - if: always()
+        name: job summary
+        run: cat "$RUNNER_TEMP/budget-artifacts/a29-summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - if: always()
+        name: make artifacts readable
+        # Written by root (sudo make); the upload action runs as the runner user.
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/budget-artifacts" || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: budget-a29
+          path: ${{ runner.temp }}/budget-artifacts
+          retention-days: 14
   build:
     runs-on: ubuntu-24.04
     steps:

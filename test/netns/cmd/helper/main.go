@@ -9,6 +9,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -21,6 +22,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -62,7 +64,7 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("helper: ")
 	if len(os.Args) < 2 {
-		log.Fatal("usage: helper inet|dns|hello|tcp|udp|ping|resolve|http …")
+		log.Fatal("usage: helper inet|dns|hello|tcp|hold|udp|ping|resolve|http|load …")
 	}
 	args := os.Args[2:]
 	switch os.Args[1] {
@@ -84,6 +86,8 @@ func main() {
 		emit(probeResolve(args))
 	case "http":
 		emit(probeHTTP(args))
+	case "load":
+		runLoad(args)
 	default:
 		log.Fatalf("unknown subcommand %q", os.Args[1])
 	}
@@ -192,6 +196,15 @@ func serveInet(args []string) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(info)
+		// load (A29): stream X-Bulk-KiB KiB of padding after the JSON line.
+		if n, err := strconv.Atoi(r.Header.Get("X-Bulk-KiB")); err == nil && n > 0 {
+			chunk := bytes.Repeat([]byte("x"), 1024)
+			for i := 0; i < n && i < 1<<16; i++ {
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+			}
+		}
 	})
 	for _, ip := range strings.Split(*ips, ",") {
 		ln80, err := net.Listen("tcp4", net.JoinHostPort(ip, "80"))
