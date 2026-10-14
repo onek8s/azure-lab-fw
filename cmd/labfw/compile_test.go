@@ -28,8 +28,9 @@ func TestCompile(t *testing.T) {
 	if rc != 1 || !strings.Contains(errs, "error [webCategories]") || !strings.Contains(errs, "compile failed with 1 error(s)") {
 		t.Fatalf("rc=%d err=%s", rc, errs)
 	}
-	if rc, _, _ = run(t, "compile", "--policy", acceptancePolicy, "--format", "nft"); rc != 1 {
-		t.Fatalf("nft rc=%d", rc)
+	rc, out, errs = run(t, "compile", "--policy", acceptancePolicy, "--format", "nft")
+	if rc != 0 || !strings.Contains(out, "table inet labfw") || !strings.Contains(out, "chain pre_nat") {
+		t.Fatalf("nft rc=%d err=%s out=%.300s", rc, errs, out)
 	}
 	if rc, _, _ = run(t, "compile"); rc != 2 {
 		t.Fatalf("no policy rc=%d", rc)
