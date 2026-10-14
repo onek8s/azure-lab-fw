@@ -6,6 +6,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.18.1
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.9.0
 	github.com/florianl/go-nflog/v2 v2.2.0
+	github.com/google/nftables v0.1.0
 	github.com/mdlayher/netlink v1.7.1
 	github.com/miekg/dns v1.1.65
 	golang.org/x/net v0.38.0
@@ -21,7 +22,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/native v1.1.0 // indirect
 	github.com/kylelemons/godebug v1.1.0 // indirect
-	github.com/mdlayher/socket v0.4.0 // indirect
+	github.com/mdlayher/socket v0.5.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/mod v0.23.0 // indirect
