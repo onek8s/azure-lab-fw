@@ -164,8 +164,18 @@ else
 		test_ip="$(az network nic show --ids "$nic" --query 'ipConfigurations[0].privateIPAddress' -o tsv)"
 		[[ "$test_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "cannot read the private IP of ${nic##*/} (got '$test_ip')"
 		log "test VM $TEST_VM: $test_ip (${nic##*/})"
-		az network nic show-effective-route-table --ids "$nic" -o json >"$OUT_DIR/effective-routes.json" ||
-			die "cannot read effective routes of ${nic##*/}"
+		# The az CLI's poller for this long-running call intermittently
+		# deadlocks ("deadlock detected by _ModuleLock"); retry.
+		got_routes=""
+		for attempt in 1 2 3 4; do
+			if az network nic show-effective-route-table --ids "$nic" -o json >"$OUT_DIR/effective-routes.json"; then
+				got_routes=1
+				break
+			fi
+			log "effective routes attempt $attempt failed; retrying"
+			sleep $((attempt * 5))
+		done
+		[ -n "$got_routes" ] || die "cannot read effective routes of ${nic##*/}"
 		if jq -e --arg fw "$FW_IP" '(.value // .) | any(.[];
 				(.state // "Active") == "Active"
 				and ((.addressPrefix // []) | index("0.0.0.0/0"))
@@ -477,7 +487,9 @@ echo E2E_DONE"
 			sum "#### AZFW* log lines for $test_ip (\`/var/log/labfw/azfw.jsonl\`, last ${nlines:-?})"
 			sum ""
 			if [ -s "$OUT_DIR/azfw-test-vm.jsonl" ]; then
-				cats="$(jq -r '.Category // empty' "$OUT_DIR/azfw-test-vm.jsonl" 2>/dev/null | sort | uniq -c | awk '{printf "%s%s×%s", (NR > 1 ? ", " : ""), $2, $1}')"
+				# Lines are cut to 300 chars on the VM (not valid JSON), so grep the
+				# Category field (always first) instead of parsing with jq.
+				cats="$(grep -o '^{"Category":"[A-Za-z]*"' "$OUT_DIR/azfw-test-vm.jsonl" | cut -d'"' -f4 | sort | uniq -c | awk '{printf "%s%s×%s", (NR > 1 ? ", " : ""), $2, $1}' || true)"
 				[ -n "$cats" ] && sum "Categories: $cats"
 				sum ""
 				sum '```json'
