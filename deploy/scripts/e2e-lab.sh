@@ -164,8 +164,18 @@ else
 		test_ip="$(az network nic show --ids "$nic" --query 'ipConfigurations[0].privateIPAddress' -o tsv)"
 		[[ "$test_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die "cannot read the private IP of ${nic##*/} (got '$test_ip')"
 		log "test VM $TEST_VM: $test_ip (${nic##*/})"
-		az network nic show-effective-route-table --ids "$nic" -o json >"$OUT_DIR/effective-routes.json" ||
-			die "cannot read effective routes of ${nic##*/}"
+		# The az CLI's poller for this long-running call intermittently
+		# deadlocks ("deadlock detected by _ModuleLock"); retry.
+		got_routes=""
+		for attempt in 1 2 3 4; do
+			if az network nic show-effective-route-table --ids "$nic" -o json >"$OUT_DIR/effective-routes.json"; then
+				got_routes=1
+				break
+			fi
+			log "effective routes attempt $attempt failed; retrying"
+			sleep $((attempt * 5))
+		done
+		[ -n "$got_routes" ] || die "cannot read effective routes of ${nic##*/}"
 		if jq -e --arg fw "$FW_IP" '(.value // .) | any(.[];
 				(.state // "Active") == "Active"
 				and ((.addressPrefix // []) | index("0.0.0.0/0"))
