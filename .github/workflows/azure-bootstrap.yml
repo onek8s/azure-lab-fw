@@ -51,7 +51,7 @@ jobs:
         run: bash deploy/scripts/bootstrap-discover.sh
       - name: bootstrap identities
         if: ${{ inputs.apply }}
-        run: bash deploy/scripts/bootstrap-identities.sh
+        run: bash -x deploy/scripts/bootstrap-identities.sh
       - name: set repository variables
         if: ${{ inputs.apply }}
         env:
