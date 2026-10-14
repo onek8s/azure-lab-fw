@@ -90,6 +90,12 @@ type env struct {
 	testCA  string // CA that signed inet's certificate (trusted upstream)
 	labCA   string // TLS-inspection CA exported from the daemon
 
+	// daeWrap prefixes the daemon command line (A29: systemd-run --scope);
+	// daeStarted runs right after the daemon process started (A29: move it
+	// into a cgroup).
+	daeWrap    []string
+	daeStarted func(pid int) error
+
 	mu      sync.Mutex
 	daemon  *exec.Cmd
 	daeDone chan error
@@ -526,11 +532,19 @@ func (e *env) startDaemon(wantHealthy bool) error {
 		return err
 	}
 	fmt.Fprintf(logf, "==== %s labfw run\n", time.Now().Format(time.RFC3339Nano))
-	cmd := exec.Command("ip", "netns", "exec", e.ns(nsFW), e.labfw, "run", "--config", e.cfgPath)
+	argv := append(append([]string(nil), e.daeWrap...), "ip", "netns", "exec", e.ns(nsFW), e.labfw, "run", "--config", e.cfgPath)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	if err := cmd.Start(); err != nil {
 		return err
+	}
+	if e.daeStarted != nil {
+		if err := e.daeStarted(cmd.Process.Pid); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return err
+		}
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait(); logf.Close() }()

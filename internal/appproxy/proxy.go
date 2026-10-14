@@ -111,7 +111,7 @@ type Proxy struct {
 	log      *slog.Logger
 	origDst  OrigDstFunc
 	roots    *x509.CertPool
-	bypass   []ir.FQDNPattern
+	bypass   BypassList
 	now      func() time.Time
 
 	active, inspected                atomic.Int64
@@ -170,13 +170,11 @@ func New(o Options) (*Proxy, error) {
 	if p.now == nil {
 		p.now = time.Now
 	}
-	for _, s := range cfg.TLS.BypassFQDNs {
-		pat, err := fqdn.ParseFQDNPattern(s)
-		if err != nil {
-			return nil, fmt.Errorf("appproxy: tls.bypassFqdns %q: %w", s, err)
-		}
-		p.bypass = append(p.bypass, pat)
+	bypass, err := ParseBypassList(cfg.TLS.BypassFQDNs)
+	if err != nil {
+		return nil, fmt.Errorf("appproxy: %w", err)
 	}
+	p.bypass = bypass
 	if p.roots == nil {
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {
@@ -436,15 +434,6 @@ func (p *Proxy) flow(ci *connInfo, host string, t ir.AppType) eval.Flow {
 	}
 }
 
-func (p *Proxy) isBypassed(host string) bool {
-	for _, pat := range p.bypass {
-		if fqdn.MatchFQDN(pat, host) {
-			return true
-		}
-	}
-	return false
-}
-
 // handleTLS implements the ClientHello-time decision (S10–S12, S14, S17,
 // S28, S30).
 func (p *Proxy) handleTLS(ctx context.Context, ci *connInfo, raw []byte, hello *ClientHello) {
@@ -459,8 +448,11 @@ func (p *Proxy) handleTLS(ctx context.Context, ci *connInfo, raw []byte, hello *
 		}
 		sni = n
 	}
-	d := p.decide(p.flow(ci, sni, ir.AppHTTPS))
-	if d.TerminateTLS && (sni == "" || !p.isBypassed(sni)) {
+	f := p.flow(ci, sni, ir.AppHTTPS)
+	// S30: a bypassed SNI is decided on the SNI alone and never terminated.
+	f.NoTLSInspection = p.bypass.Match(sni)
+	d := p.decide(f)
+	if d.TerminateTLS && !f.NoTLSInspection {
 		p.terminate(ctx, ci, raw, sni)
 		return
 	}

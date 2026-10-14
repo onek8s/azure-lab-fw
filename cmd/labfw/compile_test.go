@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,5 +74,39 @@ func TestExplain(t *testing.T) {
 	}
 	if rc, _, _ := run(t, "explain", "--policy", acceptancePolicy); rc != 2 {
 		t.Fatalf("missing --src rc=%d", rc)
+	}
+}
+
+// TestExplainBypassFQDNs: explain honours appProxy.tls.bypassFqdns from the
+// config like the proxy (S30, acceptance A26).
+func TestExplainBypassFQDNs(t *testing.T) {
+	pol, err := filepath.Abs(acceptancePolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	body := "policy:\n  source: file\n  file: " + pol + "\nappProxy:\n  tls:\n    bypassFqdns: [\"BYPASS.allowed.test\"]\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--src", "10.2.0.10", "--dst", "198.51.100.10", "--url", "https://bypass.allowed.test/"}
+	// Without the config the a26 terminateTLS rule inspects the session.
+	rc, out, errs := run(t, append([]string{"explain", "--policy", acceptancePolicy}, args...)...)
+	if rc != 0 || !strings.Contains(out, "a26-inspect-bypass") || !strings.Contains(out, "tls-inspect=yes") {
+		t.Fatalf("without bypass: rc=%d err=%s\n%s", rc, errs, out)
+	}
+	rc, out, errs = run(t, append([]string{"explain", "--config", cfg}, args...)...)
+	if rc != 0 {
+		t.Fatalf("rc=%d err=%s", rc, errs)
+	}
+	for _, w := range []string{"stage=application  action=Allow", "a26-inspect-bypass", "tls-inspect=no", "note=SNI is in appProxy.tls.bypassFqdns"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("missing %q in\n%s", w, out)
+		}
+	}
+	// A name outside the bypass list is still inspected.
+	rc, out, _ = run(t, "explain", "--config", cfg, "--src", "10.2.0.10", "--dst", "198.51.100.10", "--url", "https://allowed.test/ok/1")
+	if rc != 0 || !strings.Contains(out, "tls-inspect=yes") || strings.Contains(out, "bypassFqdns") {
+		t.Errorf("allowed.test: rc=%d\n%s", rc, out)
 	}
 }

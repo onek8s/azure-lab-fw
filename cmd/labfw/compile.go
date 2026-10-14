@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/onek8s/azure-lab-fw/internal/appproxy"
 	"github.com/onek8s/azure-lab-fw/internal/config"
 	"github.com/onek8s/azure-lab-fw/internal/eval"
 	"github.com/onek8s/azure-lab-fw/internal/fqdn"
@@ -308,6 +309,16 @@ func runExplain(args []string, stdout, stderr io.Writer) error {
 		}
 		return compileErr(err)
 	}
+	// S30: honour appProxy.tls.bypassFqdns exactly like the proxy does.
+	bypass, err := appproxy.ParseBypassList(pf.cfg.AppProxy.TLS.BypassFQDNs)
+	if err != nil {
+		return fmt.Errorf("config appProxy: %w", err)
+	}
+	if f.AppType == ir.AppHTTPS {
+		if h, err := fqdn.NormalizeHost(f.FQDN); err == nil && bypass.Match(h) {
+			f.NoTLSInspection = true
+		}
+	}
 	d, inspected := Explain(p, f)
 	printDecision(stdout, f, d, inspected)
 	return nil
@@ -368,6 +379,9 @@ func printDecision(w io.Writer, f eval.Flow, d eval.Decision, inspected bool) {
 		fmt.Fprintf(w, "response=HTTP 470 over TLS: %s\n", eval.DenyBody(d))
 	} else if d.Stage == eval.StageApp && d.Action == ir.ActionDeny {
 		fmt.Fprintln(w, "response=TCP RST")
+	}
+	if f.NoTLSInspection {
+		fmt.Fprintln(w, "note=SNI is in appProxy.tls.bypassFqdns: decided on the SNI only, never TLS-inspected (S30)")
 	}
 	if d.TerminateTLS && !f.HasPath {
 		fmt.Fprintln(w, "note=TLS inspection applies; pass --path or --url to evaluate a request")

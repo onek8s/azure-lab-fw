@@ -341,7 +341,11 @@ func TestAcceptance(t *testing.T) {
 		// Trusting only inet's CA proves the session was not terminated.
 		r := e.httpReq(t, nsClient2, inet443(inetIP1), "bypass.allowed.test", []string{e.testCA}, "bypass.allowed.test/")
 		wantStatuses(t, "bypass.allowed.test", r, 200)
-		wantExplain(t, e.explain(t, "--src", client2IP, "--dst", inetIP1, "--url", "https://bypass.allowed.test/"), "application", "Allow", "a26-inspect-bypass")
+		x := e.explain(t, "--src", client2IP, "--dst", inetIP1, "--url", "https://bypass.allowed.test/")
+		wantExplain(t, x, "application", "Allow", "a26-inspect-bypass")
+		if x.TLSInspect != "no" {
+			t.Errorf("explain tls-inspect=%s, want no (bypassFqdns, S30)\n%s", x.TLSInspect, x.Raw)
+		}
 		e.waitLog(t, "AZFWApplicationRule a26 not inspected", func(l logRec) bool {
 			return isApp(l) && l.str("Rule") == "a26-inspect-bypass" && l.str("Action") == "Allow" && !boolField(l, "IsTlsInspected")
 		})

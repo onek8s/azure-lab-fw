@@ -485,6 +485,8 @@ and a CA in `transportSecurity`). The same holds here.
   `eval.Flow.NoTLSInspection=true`: `terminateTLS` is ignored and
   `targetUrls` entries with a path cannot match (they need the path), so
   the decision falls to the first rule that matches on SNI alone.
+  `labfw explain --config` applies the same list (`appproxy.BypassList`)
+  and reports `tls-inspect=no` for such names.
 
 ### 5.8 FQDN tags
 
@@ -1205,5 +1207,14 @@ amd64 only. Everything below is a hard requirement; W9b enforces it in CI.
   `systemd-run --scope -p MemoryMax=512M -p CPUQuota=100%` with A29 and
   prints peak RSS from `/metrics`. CI fails if idle RSS > 40 MiB or A29 peak
   > 100 MiB.
+  Implemented as `TestA29_LoadBudget` (`test/netns/load_test.go`, skipped
+  unless `NETNS_LOAD=1`; hold time `NETNS_LOAD_SECONDS`, default 60, CI
+  job `budget` uses 30). Only the daemon is placed in the limit:
+  `systemd-run --scope` when systemd is PID 1, otherwise a cgroup v2 (or v1)
+  directory created directly, otherwise measure only; the summary
+  (`a29-summary.md`, samples in `a29-samples.csv`) states which. It also
+  fails on any failed connection, appProxy limit reject or OOM kill.
+  Measured (netns, cgroup v1, 60 s, 16 KiB responses every 200 ms per
+  connection): idle RSS 14 MiB, peak 32 MiB, 828 goroutines at peak.
 - E2E (§9.3) deploys on an actual B1ls and runs the matrix; the workflow
   records `free -m` and CPU credit balance before/after.
