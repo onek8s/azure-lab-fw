@@ -51,6 +51,10 @@ jobs:
       - name: sudo make test-netns
         run: sudo -E env "PATH=$PATH" NETNS_ARTIFACT_DIR="$RUNNER_TEMP/netns-artifacts" make test-netns
       - if: failure()
+        name: make logs readable
+        # Written by root (sudo make); the upload action runs as the runner user.
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/netns-artifacts" || true
+      - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: netns-daemon-logs
@@ -73,6 +77,10 @@ jobs:
       - if: always()
         name: job summary
         run: cat "$RUNNER_TEMP/budget-artifacts/a29-summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - if: always()
+        name: make artifacts readable
+        # Written by root (sudo make); the upload action runs as the runner user.
+        run: sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/budget-artifacts" || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
