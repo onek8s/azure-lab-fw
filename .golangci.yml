@@ -1,0 +1,23 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - gocritic
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, gocritic]
+formatters:
+  enable:
+    - gofmt
