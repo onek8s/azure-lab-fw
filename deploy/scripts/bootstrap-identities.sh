@@ -35,11 +35,28 @@ if [ -z "$app_id" ]; then
   app_id=$(az ad app create --display-name "$app_name" --sign-in-audience AzureADMyOrg --query appId -o tsv)
 fi
 sp_oid=$(az ad sp show --id "$app_id" --query id -o tsv 2>/dev/null || az ad sp create --id "$app_id" --query id -o tsv)
-for subj in "repo:$REPO:ref:refs/heads/main" "repo:$REPO:environment:azure-lab"; do
+# Both subject formats: plain names, and owner@id/repo@id used by orgs with
+# immutable OIDC subject claims.
+subjects=("repo:$REPO:ref:refs/heads/main" "repo:$REPO:environment:azure-lab")
+if [ -n "${REPO_WITH_IDS:-}" ] && [ "$REPO_WITH_IDS" != "$REPO" ]; then
+  subjects+=("repo:$REPO_WITH_IDS:ref:refs/heads/main" "repo:$REPO_WITH_IDS:environment:azure-lab")
+fi
+for subj in "${subjects[@]}"; do
   if [ -z "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ]; then
-    name="gh-$(tr -c 'a-zA-Z0-9-\n' '-' <<<"${subj#repo:"$REPO":}")"
-    az ad app federated-credential create --id "$app_id" -o none --parameters "$(jq -nc --arg n "$name" --arg s "$subj" \
+    name="gh-$(tr -c 'a-zA-Z0-9-\n' '-' <<<"${subj#repo:}" | cut -c1-110)"
+    params="$(jq -nc --arg n "$name" --arg s "$subj" \
       '{name:$n, issuer:"https://token.actions.githubusercontent.com", subject:$s, audiences:["api://AzureADTokenExchange"]}')"
+    # Graph rejects concurrent writes to the same app ("concurrent requests" /
+    # transient "duplicate values") and lists are eventually consistent:
+    # retry the create; on failure accept a credential that has appeared.
+    created=""
+    for attempt in 1 2 3 4 5 6; do
+      if az ad app federated-credential create --id "$app_id" -o none --parameters "$params"; then created=1; break; fi
+      sleep $((attempt * 10))
+      if [ -n "$(az ad app federated-credential list --id "$app_id" --query "[?subject=='$subj'] | [0].name" -o tsv)" ]; then created=1; break; fi
+    done
+    [ -n "$created" ] || { echo "::error::could not create federated credential for $subj"; exit 1; }
+    sleep 5
   fi
 done
 assign "$sp_oid" Owner "$lab_scope"      # create VM etc. and RBAC inside the lab RG only

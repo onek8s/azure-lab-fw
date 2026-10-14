@@ -24,6 +24,10 @@ on:
           - existing-hub
           - isolated
         default: existing-hub
+      vmSize:
+        description: "Firewall VM size (x64). Standard_B1ls is often capacity-restricted in swedencentral."
+        type: string
+        default: Standard_B2ats_v2
       testVm:
         description: "existing-hub: deploy a small test VM (no public IP) in snet-clients"
         type: boolean
@@ -53,6 +57,7 @@ jobs:
       UAMI_ID: ${{ vars.LABFW_UAMI_ID }}
       UAMI_CLIENT_ID: ${{ vars.LABFW_UAMI_CLIENT_ID }}
       LABFW_VERSION: ${{ inputs.labfwVersion }}
+      VM_SIZE: ${{ inputs.vmSize }}
       MODE: ${{ inputs.mode }}
       TEST_VM: ${{ inputs.testVm }}
       DEPLOY_TEST_SPOKE: ${{ inputs.deployTestSpoke }}
@@ -96,6 +101,7 @@ jobs:
             export LABFW_UAMI_ID="$UAMI_ID"
             export LABFW_UAMI_CLIENT_ID="$UAMI_CLIENT_ID"
             export LABFW_TEST_VM="$TEST_VM"
+            export LABFW_VM_SIZE="$VM_SIZE" LABFW_TEST_VM_SIZE="$VM_SIZE"
             export LABFW_DEPLOY_SAMPLE_POLICY="$DEPLOY_SAMPLE_POLICY"
             export LABFW_RELEASE_REPO="$GITHUB_REPOSITORY"
             az deployment group create \
@@ -110,6 +116,7 @@ jobs:
               --template-file deploy/bicep/main.bicep \
               --parameters \
                 location="$LOCATION" \
+                vmSize="$VM_SIZE" \
                 adminSshPublicKey="$(cat "$RUNNER_TEMP/labfw_key.pub")" \
                 firewallPolicyId="$POLICY_ID" \
                 deploySamplePolicy="$DEPLOY_SAMPLE_POLICY" \

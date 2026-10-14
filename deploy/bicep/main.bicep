@@ -36,6 +36,9 @@ param namePrefix string = 'labfw'
 @description('VM size of the firewall VM. Must match arch: Standard_B1ls is x64 only; use e.g. Standard_B2pts_v2 for arm64.')
 param vmSize string = 'Standard_B1ls'
 
+@description('VM size of the optional test VM (x64 image). Standard_B1ls is often capacity-restricted; Standard_B2ats_v2 is the fallback.')
+param testVmSize string = 'Standard_B2ats_v2'
+
 @description('CPU architecture of vmSize.')
 @allowed([
   'x64'
@@ -497,6 +500,7 @@ module testVm 'modules/test-vm.bicep' = if (deployTestVm) {
     name: '${namePrefix}-test'
     tags: allTags
     subnetId: testVmSubnetId
+    vmSize: testVmSize
     adminUsername: adminUsername
     adminSshPublicKey: adminSshPublicKey
   }
