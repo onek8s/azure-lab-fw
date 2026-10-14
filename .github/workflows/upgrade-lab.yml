@@ -1,0 +1,68 @@
+name: upgrade-lab
+# Upgrades labfw in place on the deployed firewall VM (no re-deploy: Azure
+# does not allow changing osProfile/customData of an existing VM). Runs the
+# idempotent deploy/cloud-init/install-labfw.sh through Run Command, which
+# downloads the release, verifies checksums.txt and restarts labfw, then
+# smoke tests it. OIDC only.
+on:
+  workflow_dispatch:
+    inputs:
+      labfwVersion:
+        description: "labfw release tag to install (e.g. v0.1.2)"
+        required: true
+        type: string
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab
+  cancel-in-progress: false
+jobs:
+  upgrade:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    env:
+      RG: ${{ vars.LABFW_RG }}
+      LABFW_VERSION: ${{ inputs.labfwVersion }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: check inputs
+        run: |
+          if ! [[ "$LABFW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::labfwVersion must look like v0.1.2"; exit 1
+          fi
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: upgrade
+        run: |
+          set -euo pipefail
+          vm="$(az vm list -g "$RG" --query "[?tags.managedBy=='labfw-deploy' && starts_with(name, 'labfw-fw')] | [0].name" -o tsv)"
+          [ -n "$vm" ] || { echo "::error::no labfw firewall VM in $RG"; exit 1; }
+          arch="$(az vm show -g "$RG" -n "$vm" --query 'storageProfile.imageReference.sku' -o tsv | grep -q arm64 && echo arm64 || echo amd64)"
+          echo "VM=$vm" >>"$GITHUB_ENV"
+          echo "upgrading $vm ($arch) to $LABFW_VERSION"
+          az vm run-command invoke -g "$RG" -n "$vm" --command-id RunShellScript \
+            --scripts @deploy/cloud-init/install-labfw.sh \
+            --parameters "$LABFW_VERSION" "$arch" "$GITHUB_REPOSITORY" \
+            --query 'value[0].message' -o tsv | tail -n 25
+      - name: smoke test
+        run: |
+          set -euo pipefail
+          # Run Command returns only the last ~4 KiB of stdout: markers last.
+          # shellcheck disable=SC2016
+          script='sleep 5
+          journalctl -u labfw --no-pager -n 6 -o cat 2>/dev/null | cut -c1-300 || true
+          echo "LABFW_HEALTH=$(curl -s --max-time 5 127.0.0.1:9090/healthz || echo unreachable)"
+          echo "LABFW_VERSION=$(/usr/local/bin/labfw version 2>&1 | head -n1)"
+          echo "LABFW_STATE=$(systemctl is-active labfw)"'
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "$script" --query 'value[0].message' -o tsv | tee "$RUNNER_TEMP/smoke.txt"
+          want="LABFW_VERSION=labfw ${LABFW_VERSION#v} "
+          if grep -qx 'LABFW_STATE=active' "$RUNNER_TEMP/smoke.txt" && grep -q "^$want" "$RUNNER_TEMP/smoke.txt"; then
+            echo "### labfw upgraded to \`$LABFW_VERSION\` on \`$VM\`: active" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::labfw $LABFW_VERSION is not active on $VM"; exit 1
+          fi

@@ -100,7 +100,16 @@ jobs:
         run: |
           set -euo pipefail
           # Throwaway key: the VMs are managed through Run Command, not SSH.
-          ssh-keygen -q -t ed25519 -N '' -C labfw-deploy -f "$RUNNER_TEMP/labfw_key"
+          # Azure rejects changing ssh.publicKeys on an existing VM, so a
+          # re-deploy reuses the key already on the firewall VM.
+          existing_key="$(az vm list -g "$RG" --query "[?tags.managedBy=='labfw-deploy'] | [0].osProfile.linuxConfiguration.ssh.publicKeys[0].keyData" -o tsv 2>/dev/null || true)"
+          if [ -n "$existing_key" ]; then
+            printf '%s\n' "$existing_key" >"$RUNNER_TEMP/labfw_key.pub"
+            : >"$RUNNER_TEMP/labfw_key"
+            echo "Re-deploy: reusing the SSH public key of the existing VM."
+          else
+            ssh-keygen -q -t ed25519 -N '' -C labfw-deploy -f "$RUNNER_TEMP/labfw_key"
+          fi
           az bicep install
           name="labfw-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           if [ "$MODE" = "existing-hub" ]; then
