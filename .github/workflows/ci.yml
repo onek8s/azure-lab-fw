@@ -22,6 +22,9 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.5.0
+          # config verify downloads the JSON schema; skip it so a slow
+          # golangci-lint.run does not fail CI (the config is linted locally).
+          verify: false
   test:
     runs-on: ubuntu-24.04
     steps:
