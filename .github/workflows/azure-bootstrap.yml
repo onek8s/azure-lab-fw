@@ -34,6 +34,8 @@ jobs:
       LOCATION: ${{ inputs.location }}
       SPOKE_SCOPES: ${{ inputs.spokeNetworkScopes }}
       REPO: ${{ github.repository }}
+      # Orgs with immutable OIDC subject claims present "owner@<id>/repo@<id>".
+      REPO_WITH_IDS: ${{ github.repository_owner }}@${{ github.repository_owner_id }}/${{ github.event.repository.name }}@${{ github.repository_id }}
     steps:
       - uses: actions/checkout@v4
       - name: az login (AZURE_OWNER)
