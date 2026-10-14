@@ -28,7 +28,7 @@ func commands() []command {
 		{"fetch", "download policy in file-source format", notImplemented("fetch")},
 		{"compile", "compile a policy and print ir|nft|diagnostics", notImplemented("compile")},
 		{"explain", "explain the decision for a flow", notImplemented("explain")},
-		{"nsg-rules", "print inbound NSG rules required for DNAT", notImplemented("nsg-rules")},
+		{"nsg-rules", "print inbound NSG rules required for DNAT", runNSGRules},
 		{"ca", "TLS inspection CA (ca export)", notImplemented("ca")},
 		{"fqdn-tags", "print the FQDN tag catalogue", runFQDNTags},
 		{"version", "print version", func(_ []string, out, _ io.Writer) error {

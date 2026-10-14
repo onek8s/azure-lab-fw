@@ -47,3 +47,39 @@ jobs:
           name: labfw-binaries
           path: bin/
           retention-days: 7
+  deploy-artifacts:
+    # Offline validation only: no Azure login, no deployment.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: bicep build
+        run: |
+          az bicep install
+          az bicep version
+          az bicep build --file deploy/bicep/main.bicep --stdout >/dev/null
+          az bicep build-params --file deploy/bicep/main.bicepparam --stdout >/dev/null
+          az bicep lint --file deploy/bicep/main.bicep
+      - name: shellcheck
+        run: |
+          mapfile -t scripts < <(git ls-files 'deploy/*.sh' 'scripts/*.sh')
+          shellcheck "${scripts[@]}"
+      - name: cloud-init template
+        run: |
+          python3 - <<'EOF'
+          import base64, yaml
+          s = open("deploy/cloud-init/cloud-init.yaml").read()
+          for k in ("__CONFIG_YAML__", "__INSTALL_SH__"):
+              assert k in s, k
+              s = s.replace(k, base64.b64encode(b"x").decode())
+          for k, v in {"__LABFW_VERSION__": "v0.0.0", "__ARCH__": "amd64", "__RELEASE_REPO__": "o/r"}.items():
+              assert k in s, k
+              s = s.replace(k, v)
+          assert "__" not in s, "unreplaced placeholder"
+          d = yaml.safe_load(s)
+          assert s.startswith("#cloud-config") and d["runcmd"], d
+          EOF
+      - name: systemd unit
+        run: |
+          # The binary is not installed here; every other finding fails the job.
+          out="$(systemd-analyze verify --man=no packaging/systemd/labfw.service 2>&1 | grep -v 'is not executable' || true)"
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi

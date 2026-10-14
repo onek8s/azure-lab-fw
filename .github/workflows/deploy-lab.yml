@@ -1,0 +1,129 @@
+name: deploy-lab
+# Deploys deploy/bicep/main.bicep into an existing resource group and smoke
+# tests labfw via Run Command. Authentication is OIDC only (no secrets); the
+# identity, federated credential and repository variables are set up manually
+# (README "Deploy to Azure"):
+#   vars.AZURE_CLIENT_ID, vars.AZURE_TENANT_ID, vars.AZURE_SUBSCRIPTION_ID
+#   vars.LABFW_RG, vars.LABFW_LOCATION, vars.LABFW_POLICY_ID,
+#   vars.LABFW_UAMI_ID, vars.LABFW_UAMI_CLIENT_ID
+on:
+  workflow_dispatch:
+    inputs:
+      labfwVersion:
+        description: "labfw release tag to install (e.g. v0.1.0)"
+        required: true
+        type: string
+      deployTestSpoke:
+        description: "Deploy the peered test spoke and test VM"
+        type: boolean
+        default: true
+      deploySamplePolicy:
+        description: "Deploy and use the sample Standard policy instead of vars.LABFW_POLICY_ID"
+        type: boolean
+        default: false
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    env:
+      RG: ${{ vars.LABFW_RG }}
+      LOCATION: ${{ vars.LABFW_LOCATION }}
+      POLICY_ID: ${{ vars.LABFW_POLICY_ID }}
+      UAMI_ID: ${{ vars.LABFW_UAMI_ID }}
+      UAMI_CLIENT_ID: ${{ vars.LABFW_UAMI_CLIENT_ID }}
+      LABFW_VERSION: ${{ inputs.labfwVersion }}
+      DEPLOY_TEST_SPOKE: ${{ inputs.deployTestSpoke }}
+      DEPLOY_SAMPLE_POLICY: ${{ inputs.deploySamplePolicy }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: check inputs
+        run: |
+          set -euo pipefail
+          for v in RG LOCATION UAMI_ID UAMI_CLIENT_ID; do
+            if [ -z "${!v}" ]; then echo "::error::repository variable for $v is not set"; exit 1; fi
+          done
+          if [ "$DEPLOY_SAMPLE_POLICY" != "true" ] && [ -z "$POLICY_ID" ]; then
+            echo "::error::vars.LABFW_POLICY_ID is required unless deploySamplePolicy is true"; exit 1
+          fi
+          if ! [[ "$LABFW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::labfwVersion must look like v0.1.0"; exit 1
+          fi
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: deploy
+        id: deploy
+        run: |
+          set -euo pipefail
+          # Throwaway key: the VMs are managed through Run Command, not SSH.
+          ssh-keygen -q -t ed25519 -N '' -C labfw-deploy -f "$RUNNER_TEMP/labfw_key"
+          az bicep install
+          name="labfw-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          az deployment group create \
+            --name "$name" \
+            --resource-group "$RG" \
+            --template-file deploy/bicep/main.bicep \
+            --parameters \
+              location="$LOCATION" \
+              adminSshPublicKey="$(cat "$RUNNER_TEMP/labfw_key.pub")" \
+              firewallPolicyId="$POLICY_ID" \
+              deploySamplePolicy="$DEPLOY_SAMPLE_POLICY" \
+              deployTestSpoke="$DEPLOY_TEST_SPOKE" \
+              userAssignedIdentityId="$UAMI_ID" \
+              userAssignedIdentityClientId="$UAMI_CLIENT_ID" \
+              labfwVersion="$LABFW_VERSION" \
+              labfwReleaseRepo="$GITHUB_REPOSITORY" \
+            --query properties.outputs -o json >"$RUNNER_TEMP/outputs.json"
+          rm -f "$RUNNER_TEMP/labfw_key" "$RUNNER_TEMP/labfw_key.pub"
+          jq . "$RUNNER_TEMP/outputs.json"
+          echo "vm=$(jq -r .vmName.value "$RUNNER_TEMP/outputs.json")" >>"$GITHUB_OUTPUT"
+      - name: smoke test
+        id: smoke
+        env:
+          VM: ${{ steps.deploy.outputs.vm }}
+        run: |
+          set -euo pipefail
+          script='cloud-init status --wait >/dev/null 2>&1 || true
+          systemctl is-active labfw && labfw version && curl -s 127.0.0.1:9090/status'
+          az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
+            --scripts "$script" --query 'value[0].message' -o tsv | tee "$RUNNER_TEMP/smoke.txt"
+          # Run Command does not propagate the exit code; check stdout.
+          if awk '/^\[stdout\]/{getline; print; exit}' "$RUNNER_TEMP/smoke.txt" | grep -qx active; then
+            echo "result=passed" >>"$GITHUB_OUTPUT"
+          else
+            echo "result=failed" >>"$GITHUB_OUTPUT"
+            echo "::error::labfw is not active on $VM"
+            exit 1
+          fi
+      - name: summary
+        if: always()
+        run: |
+          {
+            echo "### labfw lab deployment"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Resource group | \`$RG\` |"
+            echo "| labfw version | \`$LABFW_VERSION\` |"
+            if [ -s "$RUNNER_TEMP/outputs.json" ]; then
+              jq -r 'to_entries[] | "| \(.key) | `\(.value.value)` |"' "$RUNNER_TEMP/outputs.json"
+            fi
+            echo "| Smoke test | ${{ steps.smoke.outputs.result || 'not run' }} |"
+            if [ -s "$RUNNER_TEMP/smoke.txt" ]; then
+              echo
+              echo '<details><summary>Run Command output</summary>'
+              echo
+              echo '```'
+              cat "$RUNNER_TEMP/smoke.txt"
+              echo '```'
+              echo '</details>'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"

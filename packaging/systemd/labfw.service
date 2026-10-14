@@ -1,0 +1,65 @@
+# labfw — Azure Firewall emulation daemon (docs/PLAN.md §8.4).
+#
+# Runs unprivileged as user `labfw` with only the capabilities it needs:
+#   CAP_NET_ADMIN        nftables ruleset/sets (netlink), NFLOG subscription,
+#                        conntrack flush, IP_TRANSPARENT sockets
+#   CAP_NET_BIND_SERVICE DNS proxy on :53
+#   CAP_NET_RAW          raw/transparent sockets used by the proxies
+# SO_ORIGINAL_DST needs no capability.
+#
+# Kernel parameters (ip_forward, rp_filter, conntrack limits, ...) are set at
+# boot by /etc/sysctl.d/99-labfw.conf (packaging/sysctl). The unit cannot
+# write /proc/sys (not root, ProtectKernelTunables), so the deployed config
+# sets `dataplane.skipSysctl: true`. Without it the daemon's ApplySysctls is
+# best-effort: write failures are reported as a warning, never fatal.
+[Unit]
+Description=labfw Azure Firewall emulation
+Documentation=https://github.com/onek8s/azure-lab-fw
+Wants=network-online.target
+After=network-online.target systemd-sysctl.service systemd-modules-load.service
+
+[Service]
+Type=simple
+User=labfw
+Group=labfw
+ExecStart=/usr/local/bin/labfw run --config /etc/labfw/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+# SIGTERM = graceful stop; the nft ruleset stays loaded (fail-closed, §6.6).
+TimeoutStopSec=20
+Restart=always
+RestartSec=2
+
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+NoNewPrivileges=yes
+
+StateDirectory=labfw
+StateDirectoryMode=0750
+LogsDirectory=labfw
+LogsDirectoryMode=0750
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+
+# §12 resource budget for Standard_B1ls.
+MemoryHigh=128M
+MemoryMax=160M
+Environment=GOMEMLIMIT=96MiB GOGC=50
+LimitNOFILE=16384
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,83 @@
+name: release
+# Builds labfw for linux/amd64 and linux/arm64 and publishes a GitHub Release
+# with labfw_<version>_linux_<arch>.tar.gz and checksums.txt, the layout
+# deploy/cloud-init/install-labfw.sh downloads (<version> = tag without "v").
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0); created on the selected ref if it does not exist"
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: validate tag
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag '$TAG' is not of the form vMAJOR.MINOR.PATCH[-pre]"
+            exit 1
+          fi
+          echo "VERSION=${TAG#v}" >>"$GITHUB_ENV"
+      - run: go test -count=1 ./...
+      - name: build and package
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse --short HEAD)"
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            name="labfw_${VERSION}_linux_${arch}"
+            stage="dist/${name}"
+            mkdir -p "${stage}"
+            GOOS=linux GOARCH="${arch}" go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${commit}" \
+              -o "${stage}/labfw" ./cmd/labfw
+            cp -r packaging "${stage}/packaging"
+            cp LICENSE README.md "${stage}/"
+            tar -C dist --owner=0 --group=0 --sort=name -czf "dist/${name}.tar.gz" "${name}"
+          done
+          (cd dist && sha256sum labfw_*.tar.gz >checksums.txt)
+          cat dist/checksums.txt
+      - name: create GitHub release
+        run: |
+          set -euo pipefail
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists"
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "labfw $TAG" \
+            --generate-notes \
+            "${prerelease[@]}" \
+            dist/labfw_*.tar.gz dist/checksums.txt
+      - name: summary
+        run: |
+          {
+            echo "### labfw $TAG"
+            echo
+            echo '```'
+            cat dist/checksums.txt
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"

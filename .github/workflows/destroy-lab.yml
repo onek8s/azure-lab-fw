@@ -1,0 +1,70 @@
+name: destroy-lab
+# Deletes the resources deploy-lab.yml created: only resources tagged
+# managedBy=labfw-deploy in vars.LABFW_RG. The resource group itself, the
+# user-assigned identity and anything else untagged are never touched.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy" to delete the labfw lab resources'
+        required: true
+        type: string
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab
+  cancel-in-progress: false
+jobs:
+  destroy:
+    if: inputs.confirm == 'destroy'
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    env:
+      RG: ${{ vars.LABFW_RG }}
+    steps:
+      - name: check inputs
+        run: |
+          if [ -z "$RG" ]; then echo "::error::vars.LABFW_RG is not set"; exit 1; fi
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: delete tagged resources
+        run: |
+          set -euo pipefail
+          tagged() {
+            az resource list -g "$RG" --tag managedBy=labfw-deploy \
+              --query "[?type=='$1'].id" -o tsv
+          }
+          # Dependency order: VMs (their NICs/disks have deleteOption=Delete),
+          # NICs, IPs, VNets (peerings go with them), then NSGs, route tables,
+          # policies; finally anything else still carrying the tag.
+          for type in \
+            Microsoft.Compute/virtualMachines \
+            Microsoft.Network/networkInterfaces \
+            Microsoft.Compute/disks \
+            Microsoft.Network/publicIPAddresses \
+            Microsoft.Network/virtualNetworks \
+            Microsoft.Network/networkSecurityGroups \
+            Microsoft.Network/routeTables \
+            Microsoft.Network/firewallPolicies; do
+            mapfile -t ids < <(tagged "$type")
+            if [ "${#ids[@]}" -gt 0 ]; then
+              printf 'deleting %s\n' "${ids[@]}"
+              az resource delete --ids "${ids[@]}" -o none
+            fi
+          done
+          mapfile -t rest < <(az resource list -g "$RG" --tag managedBy=labfw-deploy --query "[].id" -o tsv)
+          if [ "${#rest[@]}" -gt 0 ]; then
+            printf 'deleting %s\n' "${rest[@]}"
+            az resource delete --ids "${rest[@]}" -o none
+          fi
+          left="$(az resource list -g "$RG" --tag managedBy=labfw-deploy --query 'length(@)' -o tsv)"
+          {
+            echo "### labfw lab destroyed"
+            echo
+            echo "Resource group \`$RG\` kept; tagged resources remaining: $left"
+          } >>"$GITHUB_STEP_SUMMARY"
+          [ "$left" = "0" ]

@@ -1,0 +1,30 @@
+#cloud-config
+# labfw VM bootstrap (docs/PLAN.md §8.3). Template rendered by
+# deploy/bicep/main.bicep with replace():
+#   __LABFW_VERSION__  GitHub release tag, e.g. v0.1.0
+#   __ARCH__           amd64 | arm64
+#   __RELEASE_REPO__   owner/repo hosting the release
+#   __CONFIG_YAML__    base64 of /etc/labfw/config.yaml
+#   __INSTALL_SH__     base64 of deploy/cloud-init/install-labfw.sh
+package_update: true
+package_upgrade: false
+packages:
+  - nftables
+  - conntrack
+  - curl
+  - ca-certificates
+
+write_files:
+  - path: /etc/labfw/config.yaml
+    encoding: b64
+    content: __CONFIG_YAML__
+    owner: root:root
+    permissions: "0640"
+  - path: /usr/local/sbin/install-labfw.sh
+    encoding: b64
+    content: __INSTALL_SH__
+    owner: root:root
+    permissions: "0755"
+
+runcmd:
+  - [/usr/local/sbin/install-labfw.sh, "__LABFW_VERSION__", "__ARCH__", "__RELEASE_REPO__"]

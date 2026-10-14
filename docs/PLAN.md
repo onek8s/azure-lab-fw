@@ -520,7 +520,8 @@ Microsoft and not published as lists, except Office 365.
 - Required RBAC for the VM identity: **Reader** on the policy (and base
   policies, IP groups) resource groups; **Reader** at subscription scope (or a
   custom role with `Microsoft.Network/locations/serviceTags/read`) for service
-  tags. Bicep assigns these (§8).
+  tags. These are assigned out of band to the user-assigned identity the
+  VM runs as (§8.2, README "Deploy to Azure").
 
 ### 6.2 nftables data plane (`internal/render/nft`, `internal/dataplane`)
 
@@ -694,7 +695,7 @@ Rules for the renderer:
 
 - **CA source precedence:** (1) policy `transportSecurity.certificateAuthority`
   → PFX from Key Vault via managed identity (needs `Key Vault Secrets User`
-  on the vault; Bicep assigns it when `keyVaultId` is given); (2)
+  on the vault; Bicep assigns it when `keyVaultId` and `assignKeyVaultRole` are set); (2)
   `appProxy.tls.caFile`/`caKeyFile` (PEM) from config; (3) if
   `appProxy.tls.generateLocalCA: true` (default **true** in the lab
   deployment), a CA generated once at first start into
@@ -861,14 +862,22 @@ Secrets User` role assignment), `hubVnetName/prefix`, `fwSubnetPrefix`,
 (GitHub release tag), `useSpot` (default false), `dnatPorts[]`.
 
 Resources: public IP (Standard, static), NSG, NIC (`enableIPForwarding: true`),
-Ubuntu 24.04 **minimal** VM (Standard SSD 30 GiB OS disk; system-assigned
-MI; boot diagnostics managed), role assignments (Reader on the policy's RG
-and subscription-scope Reader or custom serviceTags role; Key Vault Secrets
-User when `keyVaultId` set), route table, optional sample policy with one RCG
-covering DNAT/network/app rules including a `terminateTLS` + `targetUrls`
-rule (sample policy is Premium tier when `deploySamplePolicyPremium: true`,
-otherwise Standard without the URL rule — Premium-only properties are
-rejected by ARM on a Standard policy).
+Ubuntu 24.04 **minimal** VM (Standard SSD 30 GiB OS disk; boot diagnostics
+managed), route table, optional sample policy with one RCG covering
+DNAT/network/app rules (Standard tier: Premium-only properties such as
+`terminateTLS`/`targetUrls` are rejected by ARM on a Standard policy).
+
+As implemented (W10): the VM runs as an **existing user-assigned managed
+identity** (`userAssignedIdentityId`, `userAssignedIdentityClientId` →
+`azure.clientId`); its Reader assignments are created out of band, and the
+template creates no role assignment outside its resource group except
+`Key Vault Secrets User` when `keyVaultId` and `assignKeyVaultRole` are set.
+`deployTestSpoke` (default true) adds a peered spoke (UDR 0.0.0.0/0 → fw,
+VNet DNS = fw) with a test VM. Every resource is tagged
+`managedBy=labfw-deploy`; `.github/workflows/deploy-lab.yml` (OIDC) and
+`destroy-lab.yml` (deletes only tagged resources) drive it. Spoke route
+tables outside the template attach `routeTableId` (output) instead of
+`spokeSubnetIds[]`.
 
 ### 8.3 cloud-init
 
@@ -893,6 +902,12 @@ rejected by ARM on a Standard policy).
 `LogsDirectory=labfw`, `Restart=always`, `MemoryHigh=128M`,
 `MemoryMax=160M`, `Environment=GOMEMLIMIT=96MiB GOGC=50`,
 `LimitNOFILE=16384`.
+
+Kernel parameters come from `packaging/sysctl/99-labfw.conf` (with
+`nf_conntrack` loaded by `packaging/modules-load/labfw.conf`) because the
+unprivileged unit cannot write `/proc/sys`; the deployed config sets
+`dataplane.skipSysctl: true` and the daemon treats `ApplySysctls` failures as
+best-effort warnings.
 
 ### 8.5 Cost (approximate, pay-as-you-go, verify with the Azure pricing calculator)
 
