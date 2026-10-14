@@ -148,15 +148,16 @@ jobs:
           set -euo pipefail
           # Expanded on the VM, not here.
           # shellcheck disable=SC2016
+          # Run Command returns only the last ~4 KiB of stdout, so keep the
+          # output short and print the markers last.
           script='cloud-init status --wait >/dev/null 2>&1 || true
-          echo "LABFW_STATE=$(systemctl is-active labfw)"
+          journalctl -u labfw --no-pager -n 8 -o cat 2>/dev/null | cut -c1-300 || true
+          echo "LABFW_HEALTH=$(curl -s --max-time 5 127.0.0.1:9090/healthz || echo unreachable)"
           echo "LABFW_VERSION=$(/usr/local/bin/labfw version 2>&1 | head -n1)"
           if journalctl -u labfw --no-pager -n 200 2>/dev/null | grep -q "run: not implemented"; then
             echo "LABFW_RUN=unimplemented"
           fi
-          curl -s --max-time 5 127.0.0.1:9090/status || true
-          echo
-          journalctl -u labfw --no-pager -n 20 2>/dev/null || true'
+          echo "LABFW_STATE=$(systemctl is-active labfw)"'
           az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript \
             --scripts "$script" --query 'value[0].message' -o tsv | tee "$RUNNER_TEMP/smoke.txt"
           # Run Command does not propagate the exit code; check stdout markers.
