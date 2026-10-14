@@ -24,7 +24,10 @@ var placeholderSub = '/subscriptions/00000000-0000-0000-0000-000000000000/resour
 
 param location = 'swedencentral'
 param namePrefix = 'labfw'
-param vmSize = 'Standard_B1ls'
+// Standard_B1ls is capacity-restricted in swedencentral (SkuNotAvailable,
+// 2026-10); Standard_B2ats_v2 (x64, 2 vCPU, 1 GiB) is the PLAN §2.1 fallback.
+param vmSize = readEnvironmentVariable('LABFW_VM_SIZE', 'Standard_B2ats_v2')
+param testVmSize = readEnvironmentVariable('LABFW_TEST_VM_SIZE', 'Standard_B2ats_v2')
 param arch = 'x64'
 param adminUsername = 'azureuser'
 param adminSshPublicKey = readEnvironmentVariable(
