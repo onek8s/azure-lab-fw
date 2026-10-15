@@ -16,6 +16,10 @@ import (
 
 // Config is the daemon configuration.
 type Config struct {
+	// Platform is where labfw runs: "azure" (default; an Azure VM with IMDS,
+	// Azure DNS and the wire server) or "generic" (any other Linux host:
+	// Hyper-V, KVM, Proxmox, bare metal; no IMDS calls). PLAN §8.8.
+	Platform    string            `yaml:"platform"`
 	Policy      PolicyConfig      `yaml:"policy"`
 	Azure       AzureConfig       `yaml:"azure"`
 	Network     NetworkConfig     `yaml:"network"`
@@ -40,9 +44,27 @@ type PolicyConfig struct {
 	RefreshInterval time.Duration `yaml:"refreshInterval"`
 }
 
-// AzureConfig holds credential settings.
+// AzureConfig holds credential settings (PLAN §6.1, §8.8).
 type AzureConfig struct {
+	// Auth selects the credential: auto (default), managedIdentity, arc,
+	// clientCertificate, clientSecret or azureCLI.
+	Auth string `yaml:"auth"`
+	// ClientID is the user-assigned managed identity (managedIdentity, auto)
+	// or the app registration (clientCertificate, clientSecret).
 	ClientID string `yaml:"clientId"`
+	// TenantID is the Entra ID tenant of the service principal.
+	TenantID string `yaml:"tenantId"`
+	// CertificateFile is a PEM (certificate + private key) or PFX file.
+	CertificateFile string `yaml:"certificateFile"`
+	// CertificatePasswordFile holds the PFX password (optional).
+	CertificatePasswordFile string `yaml:"certificatePasswordFile"`
+	// ClientSecretFile holds the client secret (never inline in the config).
+	ClientSecretFile string `yaml:"clientSecretFile"`
+	// ClientSecret exists only to reject inline secrets with a clear error.
+	ClientSecret string `yaml:"clientSecret"`
+	// Location is the Azure region used for service tags; empty = IMDS
+	// (platform azure), then the policy's location.
+	Location string `yaml:"location"`
 }
 
 // NetworkConfig holds VM network settings.
@@ -53,6 +75,14 @@ type NetworkConfig struct {
 	DNSClients        []string          `yaml:"dnsClients"`
 	// LocalIPs overrides IMDS/interface detection of the VM private IPs.
 	LocalIPs []string `yaml:"localIPs"`
+	// InternalInterfaces are the LAN-side NICs of a two-armed firewall
+	// (Interface is then the WAN uplink). Empty = one-armed (Azure). §8.8.
+	InternalInterfaces []string `yaml:"internalInterfaces"`
+	// UplinkSNAT masquerades every allowed forwarded connection that leaves
+	// through the uplink of a two-armed firewall (also toward private
+	// destinations, which have no route back to the LAN). Default true;
+	// ignored when one-armed.
+	UplinkSNAT bool `yaml:"uplinkSNAT"`
 }
 
 // DNSConfig configures the DNS proxy (§6.3).
@@ -145,8 +175,11 @@ type HealthConfig struct {
 // Default returns the configuration defaults from PLAN §7.1.
 func Default() Config {
 	return Config{
-		Policy:  PolicyConfig{Source: "arm", APIVersion: "2024-05-01", RefreshInterval: 2 * time.Minute},
-		Network: NetworkConfig{Interface: "eth0", DNATAddressMap: map[string]string{"*": "primary"}, DNSClients: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}},
+		Platform: PlatformAzure,
+		Policy:   PolicyConfig{Source: "arm", APIVersion: "2024-05-01", RefreshInterval: 2 * time.Minute},
+		Azure:    AzureConfig{Auth: AuthAuto},
+		Network: NetworkConfig{Interface: "eth0", DNATAddressMap: map[string]string{"*": "primary"},
+			DNSClients: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}, UplinkSNAT: true},
 		DNS: DNSConfig{Listen: ":53", MinSetTTL: 60 * time.Second, MaxCacheTTL: 300 * time.Second,
 			MaxCacheEntries: 4096, RefreshInterval: 15 * time.Second},
 		AppProxy: AppProxyConfig{Listen: ":15443", UpstreamSelection: "originalIfResolved", MaxConns: 512,
@@ -176,10 +209,16 @@ func Load(path string) (*Config, error) {
 // Parse decodes YAML over the defaults with strict key checking.
 func Parse(b []byte) (*Config, error) {
 	c := Default()
+	// YAML merges into an existing map, so the platform-dependent default
+	// is applied only when the key is absent.
+	c.Network.DNATAddressMap = nil
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	if c.Network.DNATAddressMap == nil {
+		c.Network.DNATAddressMap = DefaultDNATAddressMap(c.Platform)
 	}
 	c.applyVPNDefaults()
 	if err := c.Validate(); err != nil {
@@ -221,11 +260,7 @@ func (c *Config) Validate() error {
 				errs = append(errs, fmt.Sprintf("network.dnatAddressMap key %q: not an IP or *", k))
 			}
 		}
-		if v != "primary" {
-			if _, err := netip.ParseAddr(v); err != nil {
-				errs = append(errs, fmt.Sprintf("network.dnatAddressMap value %q: not an IP or primary", v))
-			}
-		}
+		errs = append(errs, c.validateDNATValue(v)...)
 	}
 	for _, s := range c.Network.LocalIPs {
 		if _, err := netip.ParseAddr(s); err != nil {
@@ -246,6 +281,8 @@ func (c *Config) Validate() error {
 	if c.DNS.MaxCacheEntries <= 0 {
 		errs = append(errs, "dns.maxCacheEntries must be > 0")
 	}
+	errs = append(errs, c.validatePlatform()...)
+	errs = append(errs, c.validateAuth()...)
 	errs = append(errs, c.validateVPN()...)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
