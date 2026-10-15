@@ -178,8 +178,13 @@ func goldenCases() []goldenCase {
 		}, env: Env{Iface: "eth0"}}
 	}
 
+	vpnEnv := fullEnv()
+	vpnEnv.DNSClients = append(vpnEnv.DNSClients, pfx("100.96.0.0/24")...)
+	vpnEnv.VPN = &VPNEnv{Iface: "wg0", ListenPort: 51820, Pool: netip.MustParsePrefix("100.96.0.1/24"), SNATToPrivate: true}
+
 	return []goldenCase{
 		{name: "basic", p: basic, env: fullEnv()},
+		{name: "vpn", p: app, env: vpnEnv},
 		{name: "dnat", p: dnat, env: fullEnv(), dyn: dnatDyn},
 		{name: "fqdn", p: fqdn, env: fullEnv(), dyn: fqdnDyn},
 		{name: "app", p: app, env: fullEnv()},
@@ -331,8 +336,82 @@ func TestEnvFromConfig(t *testing.T) {
 		len(env.DNSClients) != 3 || env.Iface != "eth0" || !env.Flowtable || !env.LogNAT {
 		t.Fatalf("env = %+v", env)
 	}
+	if env.VPN != nil {
+		t.Fatalf("VPN env without vpn.enabled: %+v", env.VPN)
+	}
+	c.VPN.Enabled, c.VPN.Address, c.VPN.SNATToPrivate = true, "100.96.0.1/24", true
+	env, err = EnvFromConfig(&c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.VPN == nil || env.VPN.Iface != "wg0" || env.VPN.ListenPort != 51820 || env.VPN.Pool.String() != "100.96.0.0/24" ||
+		!env.VPN.SNATToPrivate || len(env.DNSClients) != 4 || env.DNSClients[3].String() != "100.96.0.0/24" {
+		t.Fatalf("vpn env = %+v %+v", env.VPN, env.DNSClients)
+	}
 	c.AppProxy.Listen = "bad"
 	if _, err := EnvFromConfig(&c, nil); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestVPNRules checks the WireGuard additions (PLAN §6.8): only the UDP
+// listen port is opened (on the uplink), the pool is a DNS client, pool
+// sources are accepted only from the tunnel, tunnel flows bypass the
+// flowtable, and classification is the ordinary pre_nat chain (no VPN
+// specific allow rule).
+func TestVPNRules(t *testing.T) {
+	p := &ir.Policy{Name: "p", PrivateRanges: ir.DefaultPrivateRanges(), Network: []ir.NetRule{
+		{Ref: ir.RuleRef{ID: "n0"}, Action: ir.ActionAllow, Protos: ir.ProtoTCP, Src: set("10.0.12.0/24"), Dst: anyAddr, DstPorts: ports(p1(22))},
+	}}
+	env := fullEnv()
+	env.DNSClients = append(env.DNSClients, pfx("100.96.0.0/24")...)
+	env.VPN = &VPNEnv{Iface: "wg0", ListenPort: 51999, Pool: netip.MustParsePrefix("100.96.0.7/24")}
+	out, err := Render(p, env, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`iifname "eth0" udp dport 51999 accept comment "VPN"`,
+		`udp dport 51999 fib daddr type local return comment "VPN"`,
+		`ip saddr 100.96.0.0/24 iifname != "wg0" drop comment "VPN anti-spoofing"`,
+		`iifname != "wg0" oifname != "wg0" flow add @ft`,
+		`oifname "wg0" tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu`,
+		"100.96.0.0/24",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "snatToPrivate") {
+		t.Error("snatToPrivate rule rendered although disabled")
+	}
+	if strings.Count(s, "51999") != 2 {
+		t.Errorf("listen port must appear exactly twice (input accept, DNAT exemption):\n%s", s)
+	}
+	// The DNAT exemption precedes stage 1.
+	if strings.Index(s, `udp dport 51999 fib daddr type local return`) > strings.Index(s, "# Stage 1") {
+		t.Error("VPN port exemption must come before DNAT rules")
+	}
+	env.VPN.SNATToPrivate = true
+	out, _ = Render(p, env, nil)
+	if !strings.Contains(string(out), `ct mark 0x1 ip saddr 100.96.0.0/24 oifname != "wg0" masquerade comment "VPN snatToPrivate"`) {
+		t.Errorf("snatToPrivate rule missing:\n%s", out)
+	}
+	noVPN, _ := Render(p, fullEnv(), nil)
+	if strings.Contains(string(noVPN), "VPN") || strings.Contains(string(noVPN), "wg0") {
+		t.Errorf("VPN bits rendered without VPN:\n%s", noVPN)
+	}
+	for _, bad := range []*VPNEnv{
+		{Iface: "wg0;", ListenPort: 1, Pool: netip.MustParsePrefix("100.96.0.0/24")},
+		{Iface: "eth0", ListenPort: 1, Pool: netip.MustParsePrefix("100.96.0.0/24")},
+		{Iface: "wg0", ListenPort: 0, Pool: netip.MustParsePrefix("100.96.0.0/24")},
+		{Iface: "wg0", ListenPort: 1},
+	} {
+		e := fullEnv()
+		e.VPN = bad
+		if _, err := Render(p, e, nil); err == nil {
+			t.Errorf("accepted bad VPN env %+v", bad)
+		}
 	}
 }

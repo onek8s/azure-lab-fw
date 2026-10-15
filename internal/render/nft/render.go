@@ -68,6 +68,20 @@ type Env struct {
 	Flowtable bool
 	// Logging toggles (logging.network.allowed|denied, logging.nat).
 	LogNetAllowed, LogNetDenied, LogNAT bool
+	// VPN adds the WireGuard rules (PLAN §6.8); nil = no VPN. Its pool must
+	// also be in DNSClients (EnvFromConfig does that).
+	VPN *VPNEnv
+}
+
+// VPNEnv describes the WireGuard tunnel. Tunnel traffic is classified by
+// the same pre_nat rules as any forwarded traffic; the VPN only adds the
+// UDP listen port on the uplink, anti-spoofing for the pool, MSS clamping,
+// the flowtable exclusion and (optionally) SNAT to private destinations.
+type VPNEnv struct {
+	Iface         string // tunnel interface, e.g. wg0
+	ListenPort    uint16
+	Pool          netip.Prefix
+	SNATToPrivate bool
 }
 
 // EnvFromConfig derives Env from the daemon configuration and the policy
@@ -96,12 +110,20 @@ func EnvFromConfig(c *config.Config, p *ir.Policy) (Env, error) {
 		}
 		env.ManagementSources = append(env.ManagementSources, pfx)
 	}
-	for _, s := range c.Network.DNSClients {
+	for _, s := range c.EffectiveDNSClients() {
 		pfx, err := config.ParsePrefix(s)
 		if err != nil {
 			return env, err
 		}
 		env.DNSClients = append(env.DNSClients, pfx)
+	}
+	if c.VPN.Enabled {
+		_, pool, err := c.VPN.Gateway()
+		if err != nil {
+			return env, err
+		}
+		env.VPN = &VPNEnv{Iface: c.VPN.Interface, ListenPort: uint16(c.VPN.ListenPort), Pool: pool,
+			SNATToPrivate: c.VPN.SNATToPrivate}
 	}
 	return env, nil
 }
@@ -205,6 +227,22 @@ func Render(p *ir.Policy, env Env, dyn DynamicSets) ([]byte, error) {
 	if env.SSHPort == 0 {
 		env.SSHPort = 22
 	}
+	if v := env.VPN; v != nil {
+		switch {
+		case !ifaceRE.MatchString(v.Iface):
+			return nil, fmt.Errorf("nft: invalid VPN interface name %q", v.Iface)
+		case v.Iface == env.Iface:
+			return nil, errors.New("nft: VPN interface must differ from the uplink interface")
+		case v.ListenPort == 0:
+			return nil, errors.New("nft: VPN listen port is 0")
+		case !v.Pool.IsValid() || !v.Pool.Addr().Is4():
+			return nil, errors.New("nft: VPN pool must be an IPv4 prefix")
+		}
+		v.Pool = v.Pool.Masked()
+	}
+	if env.Iface != "" && !ifaceRE.MatchString(env.Iface) {
+		return nil, fmt.Errorf("nft: invalid interface name %q", env.Iface)
+	}
 	r := &renderer{p: p, env: env, dyn: dyn, byKey: map[string]string{}, names: map[string]bool{}}
 	return r.render(), nil
 }
@@ -233,6 +271,10 @@ func (r *renderer) render() []byte {
 
 	var pre strings.Builder
 	pre.WriteString("\tchain pre_nat {\n\t\ttype nat hook prerouting priority dstnat; policy accept;\n")
+	if v := env.VPN; v != nil {
+		pre.WriteString("\n\t\t# WireGuard listen port belongs to labfw: never DNATed (PLAN §6.8)\n")
+		fmt.Fprintf(&pre, "\t\tudp dport %d fib daddr type local return comment \"VPN\"\n", v.ListenPort)
+	}
 	pre.WriteString("\n\t\t# Stage 1: DNAT rules (S1, S8, S21, S22)\n")
 	for i := range p.DNAT {
 		r.renderNAT(&pre, &p.DNAT[i])
@@ -274,8 +316,17 @@ func (r *renderer) render() []byte {
 	out.WriteString("\n\tchain fwd_filter {\n\t\ttype filter hook forward priority filter; policy drop;\n")
 	out.WriteString("\t\tmeta nfproto ipv6 drop\n")
 	out.WriteString("\t\tct state invalid drop\n")
+	if v := env.VPN; v != nil {
+		vpnAntiSpoof(&out, v)
+		fmt.Fprintf(&out, "\t\toifname %s tcp flags & (syn | rst) == syn tcp option maxseg size set rt mtu comment \"VPN MSS clamp\"\n", quote(v.Iface))
+	}
 	if env.Flowtable {
-		fmt.Fprintf(&out, "\t\tct state established ct mark %s meta l4proto { tcp, udp } flow add @ft\n", fwdMarks)
+		vpnExcl := ""
+		if v := env.VPN; v != nil {
+			// Tunnel flows stay on the slow path (no L2 neighbour on wg0).
+			vpnExcl = fmt.Sprintf("iifname != %s oifname != %s ", quote(v.Iface), quote(v.Iface))
+		}
+		fmt.Fprintf(&out, "\t\tct state established ct mark %s meta l4proto { tcp, udp } %sflow add @ft\n", fwdMarks, vpnExcl)
 	}
 	out.WriteString("\t\tct state established,related accept\n")
 	fmt.Fprintf(&out, "\t\tct mark %s accept\n", fwdMarks)
@@ -287,6 +338,14 @@ func (r *renderer) render() []byte {
 	out.WriteString("\t\tct state invalid drop\n")
 	out.WriteString("\t\tct state established,related accept\n")
 	fmt.Fprintf(&out, "\t\tip saddr %s accept comment \"Azure platform\"\n", AzurePlatformIP)
+	if v := env.VPN; v != nil {
+		vpnAntiSpoof(&out, v)
+		if env.Iface != "" {
+			fmt.Fprintf(&out, "\t\tiifname %s udp dport %d accept comment \"VPN\"\n", quote(env.Iface), v.ListenPort)
+		} else {
+			fmt.Fprintf(&out, "\t\tudp dport %d accept comment \"VPN\"\n", v.ListenPort)
+		}
+	}
 	if len(appPorts) > 0 {
 		fmt.Fprintf(&out, "\t\tct mark %s tcp dport %d accept comment \"app proxy\"\n", mark(MarkApp), env.ProxyPort)
 	}
@@ -311,6 +370,10 @@ func (r *renderer) render() []byte {
 	} else {
 		fmt.Fprintf(&out, "\t\tct mark %s masquerade comment \"S19\"\n", mark(MarkAllow))
 	}
+	if v := env.VPN; v != nil && v.SNATToPrivate {
+		fmt.Fprintf(&out, "\t\tct mark %s ip saddr %s oifname != %s masquerade comment \"VPN snatToPrivate\"\n",
+			mark(MarkAllow), prefixStrings([]netip.Prefix{v.Pool})[0], quote(v.Iface))
+	}
 	out.WriteString("\t}\n")
 
 	out.WriteString("\n\tchain out_filter {\n\t\ttype filter hook output priority filter; policy accept;\n\t}\n")
@@ -319,6 +382,13 @@ func (r *renderer) render() []byte {
 }
 
 func mark(m uint32) string { return fmt.Sprintf("0x%x", m) }
+
+// vpnAntiSpoof drops packets with a VPN pool source that did not arrive
+// through the tunnel (WireGuard itself enforces each peer's allowedIPs).
+func vpnAntiSpoof(b *strings.Builder, v *VPNEnv) {
+	fmt.Fprintf(b, "\t\tip saddr %s iifname != %s drop comment \"VPN anti-spoofing\"\n",
+		prefixStrings([]netip.Prefix{v.Pool})[0], quote(v.Iface))
+}
 
 // declareFQDNSets declares one timeout set per FQDN referenced by network
 // rules or DNAT translatedFqdn, sorted by name, with the elements from dyn.
