@@ -25,6 +25,10 @@ targetScope = 'resourceGroup'
 // ---------------------------------------------------------------------------
 // Parameters
 
+@description('OS disk type. Standard_LRS (HDD, S4 ~$1.54/mo) is the cheapest and fine for labfw; StandardSSD_LRS (E4 ~$2.40/mo) for faster boots.')
+@allowed(['Standard_LRS', 'StandardSSD_LRS', 'Premium_LRS'])
+param osDiskType string = 'Standard_LRS'
+
 @description('Azure region.')
 param location string = resourceGroup().location
 
@@ -434,7 +438,7 @@ resource fwVm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
         diskSizeGB: 30
         deleteOption: 'Delete'
         managedDisk: {
-          storageAccountType: 'StandardSSD_LRS'
+          storageAccountType: osDiskType
         }
       }
     }
@@ -496,6 +500,7 @@ module samplePolicy 'modules/sample-policy.bicep' = if (deploySamplePolicy) {
 module testVm 'modules/test-vm.bicep' = if (deployTestVm) {
   name: '${namePrefix}-test-vm'
   params: {
+    osDiskType: osDiskType
     location: location
     name: '${namePrefix}-test'
     tags: allTags
@@ -509,6 +514,7 @@ module testVm 'modules/test-vm.bicep' = if (deployTestVm) {
 module spoke 'modules/spoke.bicep' = if (deploySpoke) {
   name: '${namePrefix}-spoke'
   params: {
+    osDiskType: osDiskType
     location: location
     namePrefix: namePrefix
     tags: allTags

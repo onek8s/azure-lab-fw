@@ -10,6 +10,11 @@ on:
         description: "New x64 size, e.g. Standard_B2ats_v2"
         required: true
         default: Standard_B2ats_v2
+      osDiskSku:
+        description: "Also convert OS disks while deallocated: Standard_LRS (HDD, cheapest), StandardSSD_LRS, or keep"
+        type: choice
+        options: [Standard_LRS, StandardSSD_LRS, keep]
+        default: Standard_LRS
       which:
         description: "fw, test or both"
         type: choice
@@ -29,6 +34,7 @@ jobs:
       RG: ${{ vars.LABFW_RG }}
       SIZE: ${{ inputs.vmSize }}
       WHICH: ${{ inputs.which }}
+      DISK_SKU: ${{ inputs.osDiskSku }}
     steps:
       - uses: actions/checkout@v4
       - name: check inputs
@@ -54,12 +60,16 @@ jobs:
             bash deploy/scripts/pick-vm-size.sh "$SIZE" >/dev/null
           for vm in "${vms[@]}"; do
             cur="$(az vm show -g "$RG" -n "$vm" --query hardwareProfile.vmSize -o tsv)"
-            if [ "$cur" = "$SIZE" ]; then echo "$vm already $SIZE"; continue; fi
-            echo "$vm: $cur -> $SIZE"
+            disk="$(az vm show -g "$RG" -n "$vm" --query storageProfile.osDisk.managedDisk.id -o tsv)"
+            disk_sku="$(az disk show --ids "$disk" --query sku.name -o tsv)"
+            want_disk="$DISK_SKU"; [ "$want_disk" = keep ] && want_disk="$disk_sku"
+            if [ "$cur" = "$SIZE" ] && [ "$disk_sku" = "$want_disk" ]; then echo "$vm already $SIZE / $disk_sku"; continue; fi
+            echo "$vm: $cur -> $SIZE, disk $disk_sku -> $want_disk"
             az vm deallocate -g "$RG" -n "$vm" -o none
-            az vm resize -g "$RG" -n "$vm" --size "$SIZE" -o none
+            if [ "$disk_sku" != "$want_disk" ]; then az disk update --ids "$disk" --sku "$want_disk" -o none; fi
+            if [ "$cur" != "$SIZE" ]; then az vm resize -g "$RG" -n "$vm" --size "$SIZE" -o none; fi
             az vm start -g "$RG" -n "$vm" -o none
-            echo "- \`$vm\`: $cur → $SIZE" >>"$GITHUB_STEP_SUMMARY"
+            echo "- \`$vm\`: $cur → $SIZE, OS disk $disk_sku → $want_disk" >>"$GITHUB_STEP_SUMMARY"
           done
       - name: smoke test
         run: |

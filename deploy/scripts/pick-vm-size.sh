@@ -9,10 +9,11 @@ COUNT="${COUNT:-1}"
 if [ "$#" -gt 0 ]; then
   candidates=("$@")
 else
-  # Cheapest first. All x64 (the cloud-init/test VM images are x64).
-  candidates=(Standard_B1ls Standard_B1s Standard_B2ats_v2 Standard_B1ms Standard_B2s
-    Standard_B2als_v2 Standard_B2s_v2 Standard_D2as_v5 Standard_D2s_v5 Standard_D2as_v6
-    Standard_D2s_v6 Standard_D2ads_v5 Standard_DS1_v2 Standard_F2s_v2 Standard_A2_v2)
+  # Cheapest first by Linux PAYG list price (Azure Retail Prices API,
+  # 2026-10, issue #27). All x64 (the cloud-init/test VM images are x64).
+  candidates=(Standard_B1ls Standard_B2ats_v2 Standard_B1s Standard_B1ms Standard_B2als_v2
+    Standard_B2s Standard_B2s_v2 Standard_D2as_v5 Standard_D2as_v6 Standard_D2s_v5
+    Standard_D2s_v6 Standard_D2ads_v5 Standard_F2s_v2 Standard_DS1_v2 Standard_A2_v2)
 fi
 skus="$(az vm list-skus -l "$LOCATION" --resource-type virtualMachines -o json)"
 usage="$(az vm list-usage -l "$LOCATION" -o json)"

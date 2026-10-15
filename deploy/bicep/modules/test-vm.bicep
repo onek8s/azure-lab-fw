@@ -4,6 +4,10 @@
 // ipConfiguration references the foreign subnet. Reach it with
 // `az vm run-command invoke`.
 
+@description('OS disk type. Standard_LRS (HDD, S4 ~$1.54/mo) is the cheapest and fine for labfw; StandardSSD_LRS (E4 ~$2.40/mo) for faster boots.')
+@allowed(['Standard_LRS', 'StandardSSD_LRS', 'Premium_LRS'])
+param osDiskType string = 'Standard_LRS'
+
 param location string
 param name string
 param tags object
@@ -56,7 +60,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2024-07-01' = {
         diskSizeGB: 30
         deleteOption: 'Delete'
         managedDisk: {
-          storageAccountType: 'StandardSSD_LRS'
+          storageAccountType: osDiskType
         }
       }
     }
