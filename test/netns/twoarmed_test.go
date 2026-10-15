@@ -46,7 +46,8 @@ const (
 // transparent proxy works for LAN clients.
 func TestA31_TwoArmedGeneric(t *testing.T) {
 	base := getEnv(t) // binaries and test certificates
-	e := &env{prefix: fmt.Sprintf("lfw2%d-", os.Getpid()%10000), labfw: base.labfw, helper: base.helper,
+	// Prefix distinct from the main suite's "lfw<pid>-" (teardown deletes by prefix).
+	e := &env{prefix: fmt.Sprintf("lf2a%d-", os.Getpid()%100000), labfw: base.labfw, helper: base.helper,
 		repo: base.repo, testCA: base.testCA}
 	var err error
 	if e.dir, err = os.MkdirTemp("", "labfw-netns2-"); err != nil {
