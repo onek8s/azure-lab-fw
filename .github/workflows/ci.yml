@@ -41,6 +41,8 @@ jobs:
         run: bash deploy/scripts/view-logs-test.sh
       - name: vpn-peer offline test (fake az)
         run: bash deploy/scripts/vpn-peer-test.sh
+      - name: hybrid-identity offline test (fake az)
+        run: bash deploy/scripts/hybrid-identity-test.sh
       - name: install-labfw offline test (stubs, private mount namespace)
         run: sudo bash deploy/scripts/install-labfw-test.sh
       - name: privileged tests (nft -c, netns)
