@@ -32,6 +32,7 @@ func commands() []command {
 		{"ca", "TLS inspection CA (ca export)", runCA},
 		{"fqdn-tags", "print the FQDN tag catalogue", runFQDNTags},
 		{"logs", "view AZFW* firewall logs (filter, tail, follow, summary)", runLogs},
+		{"vpn", "WireGuard VPN: keygen, pubkey, client-config, status, peer", runVPN},
 		{"version", "print version", func(_ []string, out, _ io.Writer) error {
 			_, err := fmt.Fprintf(out, "labfw %s (%s)\n", version, commit)
 			return err

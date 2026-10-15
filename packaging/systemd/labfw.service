@@ -2,7 +2,9 @@
 #
 # Runs unprivileged as user `labfw` with only the capabilities it needs:
 #   CAP_NET_ADMIN        nftables ruleset/sets (netlink), NFLOG subscription,
-#                        conntrack flush, IP_TRANSPARENT sockets
+#                        conntrack flush, IP_TRANSPARENT sockets, the optional
+#                        WireGuard interface (rtnetlink link/address, wgctrl
+#                        generic netlink; no ip/wg binaries)
 #   CAP_NET_BIND_SERVICE DNS proxy on :53
 #   CAP_NET_RAW          raw/transparent sockets used by the proxies
 # SO_ORIGINAL_DST needs no capability.

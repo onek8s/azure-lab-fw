@@ -64,12 +64,14 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("helper: ")
 	if len(os.Args) < 2 {
-		log.Fatal("usage: helper inet|dns|hello|tcp|hold|udp|ping|resolve|http|load …")
+		log.Fatal("usage: helper inet|dns|hello|wg|tcp|hold|udp|ping|resolve|http|load …")
 	}
 	args := os.Args[2:]
 	switch os.Args[1] {
 	case "inet":
 		serveInet(args)
+	case "wg":
+		serveWG(args)
 	case "dns":
 		serveDNS(args)
 	case "hello":

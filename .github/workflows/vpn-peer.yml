@@ -1,0 +1,78 @@
+name: vpn-peer
+# Adds, removes or lists WireGuard VPN peers on the deployed labfw VM (README
+# "VPN (WireGuard)", deploy/scripts/vpn-peer.sh) and prints the client config
+# (wg-quick format, private key placeholder) into the job summary. The VM
+# must run a labfw release with VPN support and vpn.enabled (deploy-lab
+# vpnEnabled). Only PUBLIC keys are accepted: generate the key pair on the
+# client (`wg genkey | tee private.key | wg pubkey` or `labfw vpn keygen`)
+# and paste only the public key here.
+#
+# Inputs are validated (strict regexes) before az login and reach the VM only
+# as Run Command --parameters (never as script text). READ-ONLY toward Azure
+# except `az vm run-command invoke` on the labfw VM. OIDC only.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "add = register a peer (returns its client config), remove, list = peers and handshakes"
+        type: choice
+        options: [list, add, remove]
+        default: list
+      name:
+        description: "Peer name (add/remove), e.g. ci-agent-1"
+        type: string
+        default: ""
+      publicKey:
+        description: "add: the peer's WireGuard PUBLIC key (44 characters, ends with '='). Never a private key."
+        type: string
+        default: ""
+      allowedIP:
+        description: "add: tunnel address inside the VPN pool, e.g. 10.0.12.10/32 (empty = next free address)"
+        type: string
+        default: ""
+      endpoint:
+        description: "add: endpoint in the client config, host[:port] (empty = public IP of the labfw VM)"
+        type: string
+        default: ""
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab-vpn
+  cancel-in-progress: false
+jobs:
+  peer:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    timeout-minutes: 15
+    env:
+      # Inputs reach the scripts only as environment variables.
+      LAB_RG: ${{ vars.LABFW_RG || 'rg-labfw-swedencentral' }}
+      ACTION: ${{ inputs.action }}
+      PEER_NAME: ${{ inputs.name }}
+      PUBLIC_KEY: ${{ inputs.publicKey }}
+      ALLOWED_IP: ${{ inputs.allowedIP }}
+      ENDPOINT: ${{ inputs.endpoint }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: check inputs
+        env:
+          OUT_DIR: ${{ runner.temp }}/vpn-peer
+        run: VALIDATE_ONLY=1 bash deploy/scripts/vpn-peer.sh
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: vpn peer
+        env:
+          OUT_DIR: ${{ runner.temp }}/vpn-peer
+        run: bash deploy/scripts/vpn-peer.sh
+      - name: upload output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: labfw-vpn-peer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vpn-peer
+          retention-days: 7
+          if-no-files-found: warn

@@ -38,6 +38,13 @@ const (
 	client2IP = "10.2.0.10"
 	inetIP1   = "198.51.100.10"
 	inetIP2   = "198.51.100.11"
+	// A30 WireGuard VPN (PLAN §6.8): vpnc is a remote host on the "Internet"
+	// side; its tunnel address is vpnClientIP, the pool is outside
+	// network.dnsClients so the automatic DNS-client entry is exercised.
+	vpncIP      = "203.0.113.50"
+	vpnGW       = "172.30.0.1"
+	vpnClientIP = "172.30.0.10"
+	vpnPort     = "51820"
 )
 
 // Namespace roles.
@@ -47,6 +54,7 @@ const (
 	nsFW      = "fw"
 	nsInet    = "inet"
 	nsDNS     = "dns"
+	nsVPNC    = "vpnc"
 	nsSwitch  = "sw"
 )
 
@@ -95,6 +103,12 @@ type env struct {
 	// into a cgroup).
 	daeWrap    []string
 	daeStarted func(pid int) error
+
+	// vpnMode is "kernel" (wireguard module), "userspace" (wireguard-go
+	// device adopted by labfw) or "" (no WireGuard possible: A30 skipped).
+	vpnMode      string
+	vpnSkip      string
+	vpnPeersFile string
 
 	mu      sync.Mutex
 	daemon  *exec.Cmd
@@ -168,6 +182,7 @@ func setup() (*env, error) {
 		{"build", e.build},
 		{"certs", e.certs},
 		{"topology", e.topology},
+		{"vpn device", e.vpnDevice},
 		{"servers", e.startServers},
 		{"config", e.writeConfig},
 		{"daemon", func() error { return e.startDaemon(true) }},
@@ -329,7 +344,9 @@ func (e *env) topology() error {
 	specs := []nsSpec{
 		{nsFW, []string{fwIP + "/24"}, [][]string{
 			{"10.1.0.0/24", "dev", "eth0"}, {"10.2.0.0/24", "dev", "eth0"}, {"198.51.100.0/24", "dev", "eth0"},
+			{"203.0.113.0/24", "dev", "eth0"},
 		}},
+		{nsVPNC, []string{vpncIP + "/24"}, [][]string{{fwIP + "/32", "dev", "eth0"}}},
 		{nsClient, []string{clientIP + "/24"}, [][]string{onlinkDefault}},
 		{nsClient2, []string{client2IP + "/24"}, [][]string{onlinkDefault}},
 		{nsInet, []string{inetIP1 + "/24", inetIP2 + "/24"}, [][]string{onlinkDefault}},
@@ -372,6 +389,30 @@ func (e *env) topology() error {
 	return e.sysctl(nsFW, "net.ipv4.ip_forward=1",
 		"net.ipv4.conf.all.send_redirects=0", "net.ipv4.conf.default.send_redirects=0",
 		"net.ipv4.conf.eth0.send_redirects=0")
+}
+
+// vpnDevice selects how the fw namespace gets its WireGuard device (A30):
+// the kernel module when it can create a wireguard link (labfw then creates
+// wg0 itself), else a wireguard-go device named wg0 that labfw adopts.
+func (e *env) vpnDevice() error {
+	probe := "lfwwgprobe"
+	if _, err := e.nsExec(nsFW, "ip", "link", "add", probe, "type", "wireguard"); err == nil {
+		_, _ = e.nsExec(nsFW, "ip", "link", "del", probe)
+		e.vpnMode = "kernel"
+		return nil
+	}
+	if _, err := os.Stat("/dev/net/tun"); err != nil {
+		e.vpnSkip = "no wireguard kernel module and no /dev/net/tun"
+		return nil
+	}
+	cmd, err := e.startProc(nsFW, "wg-fw", true, e.helper, "wg", "--name", "wg0", "--userspace")
+	if err != nil {
+		e.vpnSkip = "wireguard-go device: " + err.Error()
+		return nil
+	}
+	e.servers = append(e.servers, cmd)
+	e.vpnMode = "userspace"
+	return nil
 }
 
 // ---------------------------------------------------------------- processes
@@ -482,7 +523,7 @@ appProxy:
     generateLocalCA: true
     extraRootCAs: [%[2]q]
     bypassFqdns: ["bypass.allowed.test"]
-    caDownloadListen: "10.0.0.4:9091"
+    caDownloadListen: ":9091"
 fqdnTags:
   office365: false
   catalogue: true
@@ -504,6 +545,15 @@ health:
   listen: "127.0.0.1:9090"
 stateDir: %[4]q
 `, e.policy, e.testCA, e.logPath, state)
+	if e.vpnMode != "" {
+		e.vpnPeersFile = filepath.Join(e.dir, "vpn-peers.json")
+		cfg += fmt.Sprintf(`vpn:
+  enabled: true
+  address: %s/24
+  peersFile: %q
+  clientRoutes: ["10.2.0.0/24", "198.51.100.0/24"]
+`, vpnGW, e.vpnPeersFile)
+	}
 	e.cfgPath = filepath.Join(e.art, "config.yaml")
 	return os.WriteFile(e.cfgPath, []byte(cfg), 0o600)
 }
@@ -646,7 +696,7 @@ func (e *env) teardown(failed bool) {
 			_ = os.WriteFile(filepath.Join(e.art, "conntrack.txt"), []byte(out), 0o644)
 		}
 		if os.Getenv("NETNS_KEEP") == "" {
-			for _, r := range []string{nsFW, nsClient, nsClient2, nsInet, nsDNS, nsSwitch} {
+			for _, r := range []string{nsFW, nsClient, nsClient2, nsInet, nsDNS, nsVPNC, nsSwitch} {
 				_ = e.ip("netns", "del", e.ns(r))
 			}
 		}

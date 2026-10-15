@@ -27,6 +27,7 @@ type Config struct {
 	Logging     LoggingConfig     `yaml:"logging"`
 	Unsupported UnsupportedConfig `yaml:"unsupported"`
 	Health      HealthConfig      `yaml:"health"`
+	VPN         VPNConfig         `yaml:"vpn"`
 	StateDir    string            `yaml:"stateDir"`
 }
 
@@ -158,6 +159,7 @@ func Default() Config {
 		Logging: LoggingConfig{File: "/var/log/labfw/azfw.jsonl", Network: AllowDeny{Allowed: true, Denied: true},
 			Application: true, NAT: true, MaxSizeMB: 50, MaxFiles: 5, Level: "info"},
 		Health:   HealthConfig{Listen: "127.0.0.1:9090"},
+		VPN:      VPNConfig{Interface: DefaultVPNInterface, ListenPort: DefaultVPNListenPort},
 		StateDir: "/var/lib/labfw",
 	}
 }
@@ -179,6 +181,7 @@ func Parse(b []byte) (*Config, error) {
 	if err := dec.Decode(&c); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	c.applyVPNDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
@@ -243,6 +246,7 @@ func (c *Config) Validate() error {
 	if c.DNS.MaxCacheEntries <= 0 {
 		errs = append(errs, "dns.maxCacheEntries must be > 0")
 	}
+	errs = append(errs, c.validateVPN()...)
 	if len(errs) > 0 {
 		return fmt.Errorf("config: %s", strings.Join(errs, "; "))
 	}

@@ -40,7 +40,7 @@ func runRun(args []string, _, stderr io.Writer) error {
 	}
 	logger := logging.NewSlogLogger(cfg.Logging.Level)
 	slog.SetDefault(logger)
-	d, err := daemon.New(cfg, daemon.Deps{Logger: logger})
+	d, err := daemon.New(cfg, daemon.Deps{Logger: logger, ConfigPath: *cfgPath})
 	if err != nil {
 		return err
 	}

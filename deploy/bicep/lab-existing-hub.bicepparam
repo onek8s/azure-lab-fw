@@ -3,6 +3,7 @@
 //
 //   LABFW_POLICY_ID=... LABFW_UAMI_ID=... LABFW_UAMI_CLIENT_ID=... \
 //   LABFW_SSH_PUBLIC_KEY="$(cat key.pub)" LABFW_VERSION=v0.1.0 [LABFW_TEST_VM=true] \
+//   [LABFW_VPN_ENABLED=true LABFW_VPN_PEERS='[...]'] \
 //   az deployment group create -g rg-labfw-swedencentral -p deploy/bicep/lab-existing-hub.bicepparam
 //
 // deploy-lab.yml (mode=existing-hub) sets those environment variables from
@@ -79,3 +80,18 @@ param useSpot = false
 
 // Paste the output of `labfw nsg-rules --policy policy.json` here.
 param dnatPorts = []
+
+// WireGuard site-to-client VPN for CI agents / management VMs outside Azure
+// (docs/PLAN.md §6.8, README "VPN (WireGuard)"). Off unless
+// LABFW_VPN_ENABLED=true. The pool 10.0.12.0/24 is outside every lab VNet;
+// spokes wired with 0.0.0.0/0 -> labfw route the replies back. Peers are
+// public keys only: LABFW_VPN_PEERS='[{"name":"agent-1","publicKey":"...","allowedIPs":["10.0.12.10/32"]}]'
+// (more at runtime with the vpn-peer workflow). Client routes default to
+// trustedPrefixes. LABFW_VPN_SOURCE_PREFIXES='["198.51.100.7/32"]' narrows
+// the NSG rule for UDP vpnListenPort (default: Internet).
+param vpnEnabled = readEnvironmentVariable('LABFW_VPN_ENABLED', 'false') == 'true'
+param vpnAddress = readEnvironmentVariable('LABFW_VPN_ADDRESS', '10.0.12.1/24')
+param vpnListenPort = int(readEnvironmentVariable('LABFW_VPN_LISTEN_PORT', '51820'))
+param vpnSourcePrefixes = json(readEnvironmentVariable('LABFW_VPN_SOURCE_PREFIXES', '["Internet"]'))
+param vpnPeers = json(readEnvironmentVariable('LABFW_VPN_PEERS', '[]'))
+param vpnSnatToPrivate = readEnvironmentVariable('LABFW_VPN_SNAT_TO_PRIVATE', 'false') == 'true'

@@ -271,6 +271,54 @@
                   ]
                 }
               ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-a30-vpn",
+              "priority": 400,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a30-vpn-allow-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "172.30.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "a30-vpn-allow-east-west",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "172.30.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "10.2.0.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                }
+              ]
             }
           ]
         }
@@ -569,6 +617,39 @@
                   "fqdnTags": [
                     "LabTag"
                   ],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-a30-vpn-web",
+              "priority": 400,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "a30-vpn-allow-https",
+                  "protocols": [
+                    {
+                      "protocolType": "Https",
+                      "port": 443
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "172.30.0.10"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
                   "webCategories": [],
                   "terminateTLS": false,
                   "destinationAddresses": [],

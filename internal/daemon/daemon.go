@@ -30,6 +30,7 @@ import (
 	"github.com/onek8s/azure-lab-fw/internal/policy"
 	"github.com/onek8s/azure-lab-fw/internal/render/nft"
 	"github.com/onek8s/azure-lab-fw/internal/resolve"
+	"github.com/onek8s/azure-lab-fw/internal/vpn"
 )
 
 // Applier loads rulesets into the kernel. The production implementation
@@ -89,6 +90,11 @@ type Deps struct {
 	Logger *slog.Logger
 	// Now is the clock used for status timestamps and cache ages.
 	Now func() time.Time
+	// VPN manages the WireGuard device; nil = vpn.NewBackend (netlink).
+	VPN VPNBackend
+	// ConfigPath is re-read on SIGHUP (ReloadConfig) to apply changes of
+	// the vpn section; "" = no config reload.
+	ConfigPath string
 }
 
 // caRetryInterval bounds Key Vault CA retries after a failure.
@@ -133,6 +139,12 @@ type Daemon struct {
 	caTried     time.Time
 	caGen       atomic.Uint64 // generation of the latest loadCA; stale background loads are dropped
 	imdsMeta    *azure.InstanceMetadata
+	vpnCfg      config.VPNConfig // vpn section in force (reloadable, PLAN §6.8)
+	vpnIface    string           // tunnel interface currently managed ("" = none)
+	vpnUp       bool             // last VPN apply succeeded
+	vpnKey      string           // vpnRenderKey of the rendered ruleset
+
+	vpnBE VPNBackend // set in New, safe for concurrent use
 
 	bg sync.WaitGroup
 
@@ -151,6 +163,7 @@ type state struct {
 	fromLKG                             bool
 	caSource                            string
 	caWarnings                          []string
+	vpn                                 vpnState
 }
 
 // New creates a daemon. It does not touch the system until Start.
@@ -160,7 +173,14 @@ func New(cfg *config.Config, deps Deps) (*Daemon, error) {
 	}
 	d := &Daemon{cfg: cfg, deps: deps, log: deps.Logger, now: deps.Now, src: deps.Source,
 		applier: deps.Applier, azure: deps.Azure, sw: deps.SetWriter, issuer: &swapIssuer{},
-		refreshCh: make(chan struct{}, 1)}
+		refreshCh: make(chan struct{}, 1), vpnCfg: cfg.VPN, vpnBE: deps.VPN}
+	if d.vpnBE == nil {
+		b, err := vpn.NewBackend()
+		if err != nil {
+			return nil, fmt.Errorf("daemon: vpn: %w", err)
+		}
+		d.vpnBE = b
+	}
 	if d.log == nil {
 		d.log = slog.Default()
 	}
@@ -293,6 +313,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 				continue
 			}
 			d.log.Info("refresh requested")
+			d.ReloadConfig()
 			_ = d.Refresh(ctx)
 			resetTimer(timer, d.jitter(d.cfg.Policy.RefreshInterval))
 		case <-timer.C:
@@ -358,6 +379,10 @@ func (d *Daemon) Start(ctx context.Context) error {
 			d.ownSW, d.sw = w, w
 		}
 	}
+
+	// The tunnel exists before the ruleset references it and before the DNS
+	// proxy may bind its gateway address (PLAN §6.8).
+	d.startVPN(ctx)
 
 	// Bind the app proxy first so the REDIRECT target is the real port.
 	ln, err := net.Listen("tcp", d.cfg.AppProxy.Listen)
@@ -500,7 +525,18 @@ func (d *Daemon) Stop() {
 		} else {
 			d.log.Info("ruleset removed (dataplane.removeOnExit)")
 		}
+		d.reloadMu.Lock()
+		if d.vpnIface != "" {
+			if err := d.vpnBE.Remove(ctx, d.vpnIface); err != nil {
+				d.log.Error("removing VPN interface failed", "err", err)
+			}
+			d.vpnIface = ""
+		}
+		d.reloadMu.Unlock()
 		c()
+	}
+	if cl, ok := d.vpnBE.(interface{ Close() error }); ok {
+		_ = cl.Close()
 	}
 	if d.ownSW != nil {
 		_ = d.ownSW.Close()
@@ -518,6 +554,10 @@ func (d *Daemon) Refresh(ctx context.Context) error {
 	d.stMu.Lock()
 	d.st.lastRefresh = d.now()
 	d.stMu.Unlock()
+
+	// Peers file and vpn section changes apply even when the policy source
+	// is unreachable.
+	d.reconcileVPN(ctx)
 
 	b, err := d.src.Fetch(ctx)
 	if err != nil {
@@ -637,7 +677,7 @@ func (d *Daemon) install(ctx context.Context, p *ir.Policy, persist bool) error 
 // render produces the ruleset for p with the DNS-learned set elements
 // re-inlined, and the DNAT translatedFqdn targets it used.
 func (d *Daemon) render(p *ir.Policy) ([]byte, map[string]netip.Addr, error) {
-	env, err := nft.EnvFromConfig(d.cfg, p)
+	env, err := nft.EnvFromConfig(d.effCfg(), p)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -744,7 +784,8 @@ func (d *Daemon) ensureDNS(p *ir.Policy) {
 			ups = append(ups, a.String())
 		}
 	}
-	key := fmt.Sprintf("%t|%s", enabled, strings.Join(ups, ","))
+	listen := dnsListen(d.effCfg(), d.vpnUp)
+	key := fmt.Sprintf("%t|%s|%s", enabled, strings.Join(ups, ","), strings.Join(listen, ","))
 	if d.dns.Load() != nil && key == d.dnsKey {
 		return
 	}
@@ -754,7 +795,7 @@ func (d *Daemon) ensureDNS(p *ir.Policy) {
 	}
 	mk := func(serve bool) *dnsproxy.Proxy {
 		px := dnsproxy.New(dnsproxy.Config{
-			Listen: []string{d.cfg.DNS.Listen}, Upstreams: slices.Clone(ups), MinSetTTL: d.cfg.DNS.MinSetTTL,
+			Listen: listen, Upstreams: slices.Clone(ups), MinSetTTL: d.cfg.DNS.MinSetTTL,
 			MaxCacheTTL: d.cfg.DNS.MaxCacheTTL, MaxCacheEntries: d.cfg.DNS.MaxCacheEntries,
 			RefreshInterval: d.cfg.DNS.RefreshInterval, Enabled: serve,
 		}, d.sw, d.log, d.onQuery)
@@ -764,7 +805,16 @@ func (d *Daemon) ensureDNS(p *ir.Policy) {
 		return px
 	}
 	px := mk(enabled)
-	if err := px.Start(d.runCtx); err != nil {
+	err := px.Start(d.runCtx)
+	if err != nil && len(listen) > 1 {
+		// The extra VPN gateway listener must never cost the other clients
+		// their DNS proxy.
+		d.log.Error("DNS proxy cannot listen on the VPN gateway; serving dns.listen only", "err", err)
+		listen = listen[:1]
+		px = mk(enabled)
+		err = px.Start(d.runCtx)
+	}
+	if err != nil {
 		d.log.Error("DNS proxy cannot listen; continuing without serving clients", "err", err)
 		px = mk(false)
 		if err := px.Start(d.runCtx); err != nil {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/onek8s/azure-lab-fw/internal/appproxy"
 	"github.com/onek8s/azure-lab-fw/internal/ir"
+	"github.com/onek8s/azure-lab-fw/internal/vpn"
 )
 
 // maxStatusDiagnostics bounds the diagnostics listed in /status.
@@ -40,6 +41,7 @@ type Status struct {
 	CAWarnings        []string        `json:"caWarnings,omitempty"`
 	LogRecordsWritten uint64          `json:"logRecordsWritten"`
 	LogRecordsDropped uint64          `json:"logRecordsDropped"`
+	VPN               *vpn.Status     `json:"vpn,omitempty"`
 }
 
 // RuleCounts are the rule counts of the enforced policy.
@@ -71,6 +73,18 @@ func timePtr(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// health is Status().Health without the cost of a full status (no device
+// queries).
+func (d *Daemon) health() string {
+	d.stMu.Lock()
+	degraded := d.st.degraded
+	d.stMu.Unlock()
+	if degraded || d.policy.Load() == nil {
+		return "degraded"
+	}
+	return "ok"
 }
 
 // Status returns a snapshot of the daemon state.
@@ -109,6 +123,7 @@ func (d *Daemon) Status() Status {
 		}
 	}
 	s.DNS.Queries = d.dnsQueries.Load()
+	s.VPN = d.vpnStatus(st.vpn, s.DNS.Serving)
 	if d.app != nil {
 		s.AppProxy = d.app.Stats()
 	}
@@ -126,7 +141,7 @@ func (d *Daemon) Handler() http.Handler {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		// 200 in both cases: a degraded daemon still enforces the
 		// last-known-good policy, so it must not be restarted for it.
-		_, _ = w.Write([]byte(d.Status().Health + "\n"))
+		_, _ = w.Write([]byte(d.health() + "\n"))
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -175,6 +190,7 @@ func (d *Daemon) metrics() []byte {
 	m("labfw_dns_indexed_fqdns", "gauge", "FQDNs whose addresses are tracked in nft sets.", s.DNS.IndexedFQDNs)
 	m("labfw_nflog_received_total", "counter", "NFLOG messages received.", s.NFLog.Received)
 	m("labfw_log_records_dropped_total", "counter", "AZFW log records dropped (queue full).", s.LogRecordsDropped)
+	writeVPNMetrics(&b, m, s.VPN)
 
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
@@ -185,6 +201,45 @@ func (d *Daemon) metrics() []byte {
 		m("process_resident_memory_bytes", "gauge", "Resident memory size in bytes.", rss)
 	}
 	return b.Bytes()
+}
+
+// writeVPNMetrics adds the WireGuard gauges and per-peer counters (PLAN §6.8).
+func writeVPNMetrics(b *bytes.Buffer, m func(name, typ, help string, v any), v *vpn.Status) {
+	enabled, up := 0, 0
+	if v != nil {
+		enabled = 1
+		if v.Error == "" {
+			up = 1
+		}
+	}
+	m("labfw_vpn_enabled", "gauge", "1 if the WireGuard VPN is enabled.", enabled)
+	if v == nil {
+		return
+	}
+	m("labfw_vpn_up", "gauge", "1 if the WireGuard device is configured without error.", up)
+	m("labfw_vpn_peers", "gauge", "Configured WireGuard peers on the device.", len(v.Peers))
+	if len(v.Peers) == 0 {
+		return
+	}
+	labels := func(p vpn.PeerStatus) string {
+		return fmt.Sprintf("{peer=%s,public_key=%s}", promQuote(p.Name), promQuote(p.PublicKey))
+	}
+	b.WriteString("# HELP labfw_vpn_peer_receive_bytes_total Bytes received from the peer.\n# TYPE labfw_vpn_peer_receive_bytes_total counter\n")
+	for _, p := range v.Peers {
+		fmt.Fprintf(b, "labfw_vpn_peer_receive_bytes_total%s %d\n", labels(p), p.RxBytes)
+	}
+	b.WriteString("# HELP labfw_vpn_peer_transmit_bytes_total Bytes sent to the peer.\n# TYPE labfw_vpn_peer_transmit_bytes_total counter\n")
+	for _, p := range v.Peers {
+		fmt.Fprintf(b, "labfw_vpn_peer_transmit_bytes_total%s %d\n", labels(p), p.TxBytes)
+	}
+	b.WriteString("# HELP labfw_vpn_peer_last_handshake_timestamp_seconds Unix time of the latest handshake (0 = none).\n# TYPE labfw_vpn_peer_last_handshake_timestamp_seconds gauge\n")
+	for _, p := range v.Peers {
+		var ts int64
+		if p.LatestHandshake != nil {
+			ts = p.LatestHandshake.Unix()
+		}
+		fmt.Fprintf(b, "labfw_vpn_peer_last_handshake_timestamp_seconds%s %d\n", labels(p), ts)
+	}
 }
 
 func promQuote(s string) string {

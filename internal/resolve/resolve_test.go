@@ -128,7 +128,7 @@ func TestFixtures(t *testing.T) {
 		{"inheritance", 0, 3, 1, map[string]int{FeatFQDNTags: 1}}, // no TagExpander → WindowsUpdate unknown
 		{"ipgroups", 1, 2, 1, map[string]int{}},
 		{"servicetags", 0, 3, 0, map[string]int{FeatServiceTag: 1}},
-		{"acceptance", 1, 11, 7, map[string]int{FeatTargetURLs: 1, FeatFQDNTags: 1}},
+		{"acceptance", 1, 13, 8, map[string]int{FeatTargetURLs: 1, FeatFQDNTags: 1}},
 		{"unsupported", 0, 1, 1, map[string]int{
 			FeatThreatIntel: 1, FeatIDPS: 1, FeatExplicitProxy: 1, FeatSQL: 1, FeatInsights: 1, FeatAutoLearn: 1,
 			FeatIPv6: 4, FeatEmpty: 1, FeatNetworkFQDN: 1, FeatWebCategories: 1, FeatMssql: 1, FeatHeaders: 1,

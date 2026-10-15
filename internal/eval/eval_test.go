@@ -549,3 +549,39 @@ func TestS30_BypassDecidesOnSNIOnly(t *testing.T) {
 		t.Fatal("bypass must not terminate")
 	}
 }
+
+// --- §5.9 VPN tunnel traffic -------------------------------------------------
+
+// TestS31_TunnelTrafficIsOrdinaryForwardedTraffic: a WireGuard client's
+// tunnel address is just a source address (PLAN §5.9). The evaluator has no
+// VPN notion: rules select pool sources like any other, the default action
+// applies, SNAT follows S19 and DNAT S8.
+func TestS31_TunnelTrafficIsOrdinaryForwardedTraffic(t *testing.T) {
+	const pool, vpnClient, other = "10.0.12.0/24", "10.0.12.10", "10.0.12.11"
+	p := finish(&ir.Policy{
+		DNAT: []ir.NatRule{{Ref: ref("d0", "rdp"), Protos: ir.ProtoTCP, Src: addrs("*"),
+			Dst: []netip.Addr{ip("20.0.0.1")}, LocalDst: []netip.Addr{ip(fw)}, DstPorts: ports(3389),
+			ToAddr: ip(client), ToPort: 3389}},
+		Network: []ir.NetRule{
+			netRule("n0", ir.ActionDeny, ir.ProtoAny, addrs(other), addrs("*"), anyPort),
+			netRule("n1", ir.ActionAllow, ir.ProtoTCP, addrs(pool), addrs(client2, inet1), ports(22)),
+		},
+		App: []ir.AppRule{{Ref: ref("a0", "web"), Action: ir.ActionAllow, Src: addrs(pool), DstAddrs: addrs("*"),
+			Protocols: https443, FQDNs: fqdns(t, "allowed.test")}},
+	})
+	d := Evaluate(p, tcp(vpnClient, client2, 22))
+	want(t, d, StageNetwork, ir.ActionAllow, "n1")
+	if d.SNAT {
+		t.Error("private destination: source kept (S19)")
+	}
+	d = Evaluate(p, tcp(vpnClient, inet1, 22))
+	want(t, d, StageNetwork, ir.ActionAllow, "n1")
+	if !d.SNAT {
+		t.Error("Internet destination: SNAT (S19)")
+	}
+	want(t, Evaluate(p, tcp(other, client2, 22)), StageNetwork, ir.ActionDeny, "n0")
+	want(t, Evaluate(p, tcp(vpnClient, client2, 23)), StageNetwork, ir.ActionDeny, "")
+	want(t, Evaluate(p, tlsHello(vpnClient, inet2, 443, "allowed.test")), StageApp, ir.ActionAllow, "a0")
+	want(t, Evaluate(p, tlsHello(vpnClient, inet2, 443, "other.test")), StageApp, ir.ActionDeny, "")
+	want(t, Evaluate(p, tcp(vpnClient, fw, 3389)), StageDNAT, ir.ActionDNAT, "d0")
+}

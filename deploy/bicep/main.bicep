@@ -125,6 +125,40 @@ param dnatPorts dnatPort[] = []
 @description('Extra tags for every resource.')
 param tags object = {}
 
+@description('Enable the WireGuard site-to-client VPN on labfw (docs/PLAN.md §6.8): agents/management VMs outside Azure reach the lab through the firewall; tunnel traffic is evaluated by the policy like any forwarded traffic.')
+param vpnEnabled bool = false
+
+@description('VPN gateway address on wg0 with the client pool prefix length (vpn.address). Use a range outside every VNet.')
+param vpnAddress string = '10.0.12.1/24'
+
+@description('UDP listen port of the VPN (opened in the NSG for vpnSourcePrefixes).')
+@minValue(1)
+@maxValue(65535)
+param vpnListenPort int = 51820
+
+@description('NSG sources allowed to reach the VPN UDP port: a service tag (Internet) or IPs/CIDRs of the agents\' egress.')
+param vpnSourcePrefixes string[] = ['Internet']
+
+@description('VPN peers (public keys only; client private keys never leave the clients). More peers can be added at runtime with the vpn-peer workflow.')
+param vpnPeers vpnPeer[] = []
+
+@description('Prefixes routed into the tunnel by generated client configs (vpn.clientRoutes). Empty = trustedPrefixes (isolated mode: hub, spoke and trustedPrefixes).')
+param vpnClientRoutes string[] = []
+
+@description('Masquerade VPN clients to the labfw private IP for private destinations too (vpn.snatToPrivate): only needed for subnets without a route back to labfw.')
+param vpnSnatToPrivate bool = false
+
+@export()
+@description('One VPN peer (vpn.peers entry).')
+type vpnPeer = {
+  @maxLength(63)
+  name: string
+  @minLength(44)
+  @maxLength(44)
+  publicKey: string
+  allowedIPs: string[]
+}
+
 @export()
 @description('One inbound NSG rule (same shape as `labfw nsg-rules` output).')
 type dnatPort = {
@@ -160,7 +194,25 @@ var dnsClients = existingHub
       trustedPrefixes
     )
 
-var labfwConfig = {
+var vpnCidr = parseCidr(vpnAddress)
+var vpnPool = '${vpnCidr.network}/${vpnCidr.cidr}'
+// The vpn section is only written when enabled, so releases without VPN
+// support (strict config decoding) still accept the config.
+var vpnConfig = {
+  vpn: {
+    enabled: true
+    interface: 'wg0'
+    listenPort: vpnListenPort
+    address: vpnAddress
+    // Runtime peers (vpn-peer workflow / `labfw vpn peer add`), re-read on reload.
+    peersFile: '/var/lib/labfw/vpn-peers.json'
+    peers: vpnPeers
+    clientRoutes: empty(vpnClientRoutes) ? dnsClients : vpnClientRoutes
+    snatToPrivate: vpnSnatToPrivate
+  }
+}
+
+var labfwBaseConfig = {
   policy: {
     source: 'arm'
     resourceId: policyId
@@ -193,6 +245,8 @@ var labfwConfig = {
     skipSysctl: true
   }
 }
+
+var labfwConfig = union(labfwBaseConfig, vpnEnabled ? vpnConfig : {})
 
 // JSON is valid YAML, so the config is rendered with string().
 var cloudInit = replace(
@@ -251,6 +305,41 @@ var forwardRule = empty(dnsClients)
         }
       }
     ]
+
+// VPN (PLAN §6.8): WireGuard UDP from the clients' public IPs, and the
+// decrypted tunnel traffic leaving the NIC with pool source addresses (not
+// covered by AllowVnetOutBound: the pool is in no VNet).
+var vpnRules = vpnEnabled
+  ? [
+      {
+        name: 'allow-labfw-vpn-wireguard'
+        properties: {
+          priority: 300
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Udp'
+          sourceAddressPrefix: length(vpnSourcePrefixes) == 1 ? vpnSourcePrefixes[0] : null
+          sourceAddressPrefixes: length(vpnSourcePrefixes) == 1 ? [] : vpnSourcePrefixes
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: string(vpnListenPort)
+        }
+      }
+      {
+        name: 'allow-labfw-vpn-pool-outbound'
+        properties: {
+          priority: 300
+          direction: 'Outbound'
+          access: 'Allow'
+          protocol: '*'
+          sourceAddressPrefix: vpnPool
+          sourcePortRange: '*'
+          destinationAddressPrefix: '*'
+          destinationPortRange: '*'
+        }
+      }
+    ]
+  : []
 
 // NSG rule matching the sample policy's DNAT rule (modules/sample-policy.bicep).
 var sampleDnatPort = '8080'
@@ -313,7 +402,7 @@ resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
   location: location
   tags: allTags
   properties: {
-    securityRules: concat(sshRule, forwardRule, dnatRules, sampleDnatRule)
+    securityRules: concat(sshRule, forwardRule, vpnRules, dnatRules, sampleDnatRule)
   }
 }
 
@@ -490,7 +579,7 @@ module samplePolicy 'modules/sample-policy.bicep' = if (deploySamplePolicy) {
     name: '${namePrefix}-sample-policy'
     tags: allTags
     firewallPublicIp: publicIp.properties.ipAddress
-    sourcePrefixes: dnsClients
+    sourcePrefixes: vpnEnabled ? union(dnsClients, [vpnPool]) : dnsClients
     dnatTargetIp: deploySpoke ? spokeTestVmIp : (deployTestVm ? testVm!.outputs.privateIp : fwPrivateIp)
     dnatSourceAddress: sampleDnatSource
     dnatPort: sampleDnatPort
@@ -576,3 +665,6 @@ output testVmPrivateIp string = deployTestVm ? testVm!.outputs.privateIp : ''
 output firewallPolicyId string = policyId
 output fwSubnetId string = fwSubnetId
 output routeTableId string = existingHub ? '' : routeTable.id
+@description('WireGuard endpoint for client configs (public IP:port); empty when vpnEnabled is false.')
+output vpnEndpoint string = vpnEnabled ? '${publicIp.properties.ipAddress}:${vpnListenPort}' : ''
+output vpnPool string = vpnEnabled ? vpnPool : ''
