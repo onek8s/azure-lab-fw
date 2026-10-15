@@ -18,6 +18,10 @@ on:
         type: string
         required: false
         default: ""
+      stopTestVmAfter:
+        description: "Start the test VM if it is deallocated, and deallocate it again afterwards (saves cost)"
+        type: boolean
+        default: true
 permissions:
   id-token: write
   contents: read
@@ -55,6 +59,20 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: start test VM if deallocated
+        id: testvm
+        run: |
+          set -euo pipefail
+          rg="${{ vars.LABFW_RG }}"
+          vm="$(az vm list -g "$rg" --query "[?tags.managedBy=='labfw-deploy' && starts_with(name, 'labfw-test')] | [0].name" -o tsv)"
+          [ -n "$vm" ] || exit 0
+          state="$(az vm get-instance-view -g "$rg" -n "$vm" --query "instanceView.statuses[?starts_with(code,'PowerState/')].code | [0]" -o tsv)"
+          if [ "$state" != "PowerState/running" ]; then
+            echo "starting $vm ($state)"
+            az vm start -g "$rg" -n "$vm" -o none
+            sleep 30
+            echo "started=$vm" >>"$GITHUB_OUTPUT"
+          fi
       - name: end-to-end check
         env:
           LABFW_BIN: ${{ runner.temp }}/labfw
@@ -68,3 +86,6 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 30
           if-no-files-found: warn
+      - name: deallocate test VM again
+        if: always() && inputs.stopTestVmAfter && steps.testvm.outputs.started != ''
+        run: az vm deallocate -g "${{ vars.LABFW_RG }}" -n "${{ steps.testvm.outputs.started }}" -o none
