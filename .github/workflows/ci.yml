@@ -29,6 +29,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          # install-labfw-test.sh compares the Azure install with the
+          # pre-W13 script revision.
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -37,6 +41,8 @@ jobs:
         run: bash deploy/scripts/view-logs-test.sh
       - name: vpn-peer offline test (fake az)
         run: bash deploy/scripts/vpn-peer-test.sh
+      - name: install-labfw offline test (stubs, private mount namespace)
+        run: sudo bash deploy/scripts/install-labfw-test.sh
       - name: privileged tests (nft -c, netns)
         run: |
           sudo apt-get install -y -qq nftables conntrack >/dev/null
