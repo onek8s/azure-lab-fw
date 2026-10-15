@@ -423,6 +423,17 @@ if [ "$wired" = true ]; then
 				Allow/http*/http:470) verdict=FAIL ;;
 				Allow/http*/http:*) verdict=PASS ;;
 				Deny/tcp/timeout) verdict=PASS ;;
+				Deny/tcp/open)
+					# A bare TCP connect cannot observe an application-stage deny:
+					# the transparent proxy (like Azure Firewall) completes the
+					# handshake and only denies after the ClientHello/request.
+					if [ "$stage" = application ]; then
+						verdict=PASS
+						why="application port: handshake accepted by the proxy, deny happens at TLS/HTTP"
+					else
+						verdict=FAIL
+					fi
+					;;
 				Deny/http*/http:470 | Deny/http*/reset | Deny/http*/timeout | Deny/http*/refused) verdict=PASS ;;
 				*) verdict=FAIL ;;
 				esac
