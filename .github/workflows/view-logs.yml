@@ -1,0 +1,108 @@
+name: view-logs
+# Shows the AZFW* logs of the deployed labfw VM (README "Viewing logs",
+# deploy/scripts/view-logs.sh): runs `labfw logs` on the VM through Run
+# Command with the filters below (validated, then passed as --parameters,
+# never as script text), renders a table or summary with labfw built from
+# this commit into the job summary and uploads the entries as JSON lines.
+# READ-ONLY toward Azure except `az vm run-command invoke` on the labfw VM.
+# OIDC only.
+on:
+  workflow_dispatch:
+    inputs:
+      category:
+        description: "Log category"
+        type: choice
+        options: [all, network, nat, app, dns]
+        default: all
+      action:
+        description: "Action (allow also matches DNAT entries; DNS queries have no action)"
+        type: choice
+        options: [any, allow, deny]
+        default: any
+      src:
+        description: "Source IP or CIDR (e.g. 10.200.0.0/24)"
+        type: string
+        default: ""
+      dst:
+        description: "Destination (or DNAT translated) IP or CIDR"
+        type: string
+        default: ""
+      fqdn:
+        description: "FQDN substring or *.domain (application rules, DNS queries)"
+        type: string
+        default: ""
+      rule:
+        description: "Substring of Policy/RuleCollectionGroup/RuleCollection/Rule ('default' = default action)"
+        type: string
+        default: ""
+      since:
+        description: "Time window: duration (15m, 1h, 1d) or RFC3339"
+        type: string
+        default: "1h"
+      tail:
+        description: "Newest matching entries to fetch (1-9999; capped to fit the ~4 KiB Run Command output)"
+        type: string
+        default: "200"
+      output:
+        description: "Job summary: table of entries (+ summary) or summary only"
+        type: choice
+        options: [table, summary]
+        default: table
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab-logs
+  cancel-in-progress: false
+jobs:
+  logs:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    timeout-minutes: 20
+    env:
+      # Inputs reach the scripts only as environment variables.
+      LAB_RG: ${{ vars.LABFW_RG || 'rg-labfw-swedencentral' }}
+      CATEGORY: ${{ inputs.category }}
+      ACTION: ${{ inputs.action }}
+      SRC: ${{ inputs.src }}
+      DST: ${{ inputs.dst }}
+      FQDN: ${{ inputs.fqdn }}
+      RULE: ${{ inputs.rule }}
+      SINCE: ${{ inputs.since }}
+      TAIL: ${{ inputs.tail }}
+      OUTPUT: ${{ inputs.output }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build labfw
+        env:
+          LABFW_BIN: ${{ runner.temp }}/labfw
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -trimpath -o "$LABFW_BIN" ./cmd/labfw
+          "$LABFW_BIN" version
+      - name: check inputs
+        env:
+          LABFW_BIN: ${{ runner.temp }}/labfw
+          OUT_DIR: ${{ runner.temp }}/view-logs
+        run: VALIDATE_ONLY=1 bash deploy/scripts/view-logs.sh
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: view logs
+        env:
+          LABFW_BIN: ${{ runner.temp }}/labfw
+          OUT_DIR: ${{ runner.temp }}/view-logs
+        run: bash deploy/scripts/view-logs.sh
+      - name: upload entries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: labfw-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/view-logs
+          retention-days: 14
+          if-no-files-found: warn

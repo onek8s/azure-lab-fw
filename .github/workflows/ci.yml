@@ -33,6 +33,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go test -count=1 ./...
+      - name: view-logs offline test (fake az)
+        run: bash deploy/scripts/view-logs-test.sh
       - name: privileged tests (nft -c, netns)
         run: |
           sudo apt-get install -y -qq nftables conntrack >/dev/null

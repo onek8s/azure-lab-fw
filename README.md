@@ -204,6 +204,72 @@ newline-separated `https://host/path`, `http://host/path`,
 expected, observed, PASS/FAIL); the artifact holds `bundle.json`, `ir.json`,
 probes, results and the raw Run Command output. Any mismatch fails the run.
 
+### Viewing logs
+
+labfw writes one JSON line per connection or DNS query to
+`/var/log/labfw/azfw.jsonl` (`logging.file`), rotated by size into
+`azfw.jsonl.1` … `azfw.jsonl.<maxFiles-1>`. `labfw logs` reads the active
+file and the rotated ones (oldest first), filters and prints them.
+
+**(a) From the Actions tab:** run
+[`view-logs`](.github/workflows/view-logs.yml)
+([`deploy/scripts/view-logs.sh`](deploy/scripts/view-logs.sh)). It finds the
+firewall VM (`tags.managedBy=labfw-deploy`, name `labfw-fw*`) in
+`vars.LABFW_RG`, runs `labfw logs` there through Run Command and renders the
+result with `labfw` built from the checked-out commit into the job summary;
+the artifact holds the entries as JSON lines (`azfw.jsonl`). Inputs:
+`category` (all, network, nat, app, dns), `action` (any, allow, deny), `src`,
+`dst` (IP or CIDR), `fqdn` (substring or `*.domain`), `rule` (substring of
+`Policy/RuleCollectionGroup/RuleCollection/Rule`, `default` = default action),
+`since` (default `1h`; `15m`, `1d`, or RFC3339), `tail` (default 200) and
+`output` (`table`, or `summary` for counts by category/action/rule and the top
+10 denied sources, destinations and FQDNs). For example:
+
+```sh
+# Denies from 10.200.0.0/24 in the last hour
+gh workflow run view-logs.yml -f action=deny -f src=10.200.0.0/24 -f since=1h
+# Summary of the last day
+gh workflow run view-logs.yml -f output=summary -f since=1d
+```
+
+Inputs are checked against strict patterns and reach the VM only as Run
+Command parameters, never as script text. Run Command returns only the last
+~4 KiB of output, so the entries travel gzip+base64-encoded; when they still
+do not fit, only the newest ones are fetched and the summary says
+"Capped to the newest N of M" (narrow the filters or lower `tail`). The
+summary itself is computed on the VM over every match in the window. If the
+VM runs a labfw release without `logs`, the VM pre-filters with grep
+(category, action, plain source IP, FQDN substring; last `tail` lines) and the
+runner applies the exact filters — upgrade with `upgrade-lab` for full
+results.
+
+**(b) On the VM** (SSH, or Run Command — which shows only the last ~4 KiB of output):
+
+```sh
+labfw logs --action deny -n 50                      # last 50 denies, table
+labfw logs --src 10.200.0.0/24 --since 1h -f        # follow (handles rotation)
+labfw logs --category app --fqdn '*.microsoft.com' --output json
+labfw logs --since 1d --output summary
+az vm run-command invoke -g rg-labfw-swedencentral -n labfw-fw --command-id RunShellScript \
+  --scripts 'labfw logs --action deny -n 50' --query 'value[0].message' -o tsv
+```
+
+Flags: `--category network|nat|app|dns|all`, `--action allow|deny` (allow
+also matches DNAT entries; DNS queries have no action), `--src`, `--dst` (IP
+or CIDR; `--dst` also matches the DNAT translated address), `--fqdn`,
+`--rule`, `--since`/`--until` (duration or RFC3339), `-n/--tail N` (default
+100, 0 = all), `-f/--follow`, `--output table|json|summary`, `--file` or
+`--config` (default `/etc/labfw/config.yaml`, `logging.file`). Malformed
+lines are skipped and counted on stderr.
+
+**(c) Field names** are those of the Azure Firewall resource-specific tables
+(`AZFWNetworkRule`, `AZFWNatRule`, `AZFWApplicationRule`, `AZFWDnsQuery` in
+the `Category` field; `SourceIp`, `DestinationPort`, `Fqdn`, `Action`,
+`RuleCollectionGroup`, `ActionReason`, … — [PLAN §6.5](docs/PLAN.md)), so the
+same KQL concepts apply, e.g. `jq 'select(.Action=="Deny")'` over the JSON
+lines. Ingestion into Log Analytics (DCR + Logs Ingestion API) is a stretch
+goal ([PLAN §11](docs/PLAN.md), item 4).
+
 ### Switching to a real Azure Firewall
 
 The Firewall Policy stays the source of truth, so no rule changes are

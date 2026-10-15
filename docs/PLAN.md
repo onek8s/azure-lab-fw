@@ -780,8 +780,20 @@ labfw explain  --config … [--policy file.json] --src 10.1.0.5 --dst 93.184.216
 labfw nsg-rules --config …                            # inbound NSG rules needed for DNAT ports (JSON for Bicep/az CLI)
 labfw ca export [--config …]                         # print the TLS-inspection CA certificate (PEM)
 labfw fqdn-tags [--tag WindowsUpdate]                 # print catalogue contents / what a tag expands to
+labfw logs     [--config …|--file azfw.jsonl] [--category network|nat|app|dns|all] [--action allow|deny]
+               [--src ip/cidr] [--dst ip/cidr] [--fqdn sub|*.domain] [--rule sub] [--since 15m|RFC3339] [--until …]
+               [-n 100] [-f] [--output table|json|summary]
+               # view AZFW* logs (§6.5): azfw.jsonl + rotated files oldest first; streaming, low memory
 labfw version
 ```
+
+`logs` filters combine with AND; `--action allow` also matches AZFWNatRule
+entries, AZFWDnsQuery entries never match `--action`; `--rule default`
+matches the default action; `--output summary` counts every match (counts by
+category/action/rule, top 10 denied sources/destinations/FQDNs). The
+`view-logs` workflow (`deploy/scripts/view-logs.sh`) runs it on the VM via
+Run Command (filters as `--parameters`, gzip+base64 payload capped to the
+~4 KiB output limit) and renders the result on the runner.
 
 `explain` accepts `--url https://www.contoso.com/a/b` (host, path and scheme
 derive `--fqdn`, `--app`, `--port`) and prints whether TLS inspection would
