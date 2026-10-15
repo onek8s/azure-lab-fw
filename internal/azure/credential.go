@@ -19,10 +19,10 @@ const (
 	KeyVaultScope = "https://vault.azure.net/.default"
 )
 
-// NewCredential returns the credential chain used by labfw:
-// ManagedIdentityCredential (user-assigned when clientID is non-empty,
-// otherwise the system-assigned identity) followed by AzureCLICredential for
-// development machines.
+// NewCredential returns the default credential chain of an Azure VM
+// (azure.auth auto on platform azure): ManagedIdentityCredential
+// (user-assigned when clientID is non-empty, otherwise the system-assigned
+// identity) followed by AzureCLICredential for development machines.
 func NewCredential(clientID string) (azcore.TokenCredential, error) {
 	var miOpts azidentity.ManagedIdentityCredentialOptions
 	if clientID != "" {

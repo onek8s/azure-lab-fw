@@ -236,12 +236,22 @@ func New(cfg *config.Config, deps Deps) (*Daemon, error) {
 	return d, nil
 }
 
-// NewAzureClient creates the Azure client (managed identity → Azure CLI).
-// If no credential can be created the returned client still serves IMDS
-// and the error is returned alongside it.
+// CredentialOptions maps the azure section to azure.CredentialOptions.
+func CredentialOptions(cfg *config.Config, logger *slog.Logger) azure.CredentialOptions {
+	a := cfg.Azure
+	return azure.CredentialOptions{Auth: a.Auth, Generic: cfg.IsGeneric(), ClientID: a.ClientID, TenantID: a.TenantID,
+		CertificateFile: a.CertificateFile, CertificatePasswordFile: a.CertificatePasswordFile,
+		ClientSecretFile: a.ClientSecretFile, Logger: logger}
+}
+
+// NewAzureClient creates the Azure client with the azure.auth credential
+// (default: managed identity → Azure CLI). If no credential can be created
+// the returned client still serves IMDS and the error is returned alongside
+// it. On platform generic the client never calls IMDS (the daemon does not
+// ask it to).
 func NewAzureClient(cfg *config.Config, logger *slog.Logger) (*azure.Client, error) {
 	opts := azure.Options{APIVersion: cfg.Policy.APIVersion, Logger: logger}
-	cred, cerr := azure.NewCredential(cfg.Azure.ClientID)
+	cred, cerr := azure.NewCredentialFromOptions(CredentialOptions(cfg, logger))
 	if cerr != nil {
 		c, err := azure.New(nil, opts)
 		if err != nil {

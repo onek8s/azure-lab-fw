@@ -13,6 +13,7 @@ import (
 
 	"github.com/onek8s/azure-lab-fw/internal/azure"
 	"github.com/onek8s/azure-lab-fw/internal/config"
+	"github.com/onek8s/azure-lab-fw/internal/daemon"
 	"github.com/onek8s/azure-lab-fw/internal/policy"
 )
 
@@ -98,7 +99,7 @@ func runNSGRules(args []string, stdout, stderr io.Writer) error {
 // fetchARMBundle downloads the policy chain and referenced IP groups (no
 // service tags: DNAT sources cannot use them).
 func fetchARMBundle(ctx context.Context, cfg *config.Config) (*policy.Bundle, error) {
-	cred, err := azure.NewCredential(cfg.Azure.ClientID)
+	cred, err := azure.NewCredentialFromOptions(daemon.CredentialOptions(cfg, nil))
 	if err != nil {
 		return nil, err
 	}
