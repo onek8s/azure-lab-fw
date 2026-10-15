@@ -35,13 +35,15 @@ jobs:
       - run: go test -count=1 ./...
       - name: view-logs offline test (fake az)
         run: bash deploy/scripts/view-logs-test.sh
+      - name: vpn-peer offline test (fake az)
+        run: bash deploy/scripts/vpn-peer-test.sh
       - name: privileged tests (nft -c, netns)
         run: |
           sudo apt-get install -y -qq nftables conntrack >/dev/null
           sudo -E env "PATH=$PATH" go test -count=1 ./internal/...
   netns:
-    # Acceptance matrix A1–A28 + randomized differential test in network
-    # namespaces (PLAN §9.2, test/netns).
+    # Acceptance matrix A1–A28, A30 (WireGuard VPN) + randomized
+    # differential test in network namespaces (PLAN §9.2, test/netns).
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +119,8 @@ jobs:
           # also build with the optional test VM enabled.
           az bicep build-params --file deploy/bicep/lab-existing-hub.bicepparam --stdout >/dev/null
           LABFW_TEST_VM=true az bicep build-params --file deploy/bicep/lab-existing-hub.bicepparam --stdout >/dev/null
+          LABFW_VPN_ENABLED=true LABFW_VPN_PEERS='[{"name":"agent-1","publicKey":"xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=","allowedIPs":["10.0.12.10/32"]}]' \
+            az bicep build-params --file deploy/bicep/lab-existing-hub.bicepparam --stdout >/dev/null
           az bicep lint --file deploy/bicep/main.bicep
           az bicep lint --file deploy/bicep/lab-existing-hub.bicepparam
       - name: shellcheck
