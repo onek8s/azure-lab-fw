@@ -78,6 +78,7 @@ lab-policy / lab-network-rcg (100)
   allow-net (300, Allow)          a4-allow-east-west, a6-allow-child-echo, a7-allow-fqdn-udp,
                                   a14-allow-https-other, a15-allow-udp-echo, a16-allow-any-proto,
                                   a28-allow-cname-fqdn
+  allow-a30-vpn (400, Allow)      a30-vpn-allow-echo, a30-vpn-allow-east-west              (source 172.30.0.10 only)
 lab-policy / lab-dnat-rcg (200)
   dnat-inbound (100, DNAT)        a1-dnat-rdp
 lab-policy / lab-app-rcg (300)
@@ -86,6 +87,7 @@ lab-policy / lab-app-rcg (300)
   allow-tls-inspect (200, Allow)  a22-inspect-url-ok, a25-inspect-badcert, a26-inspect-bypass   (source client2 only)
   allow-web (300, Allow)          a8-allow-https-allowed, a12-allow-wildcard-http,
                                   a21-allow-url-http, a27-allow-fqdntag                         (source client only)
+  allow-a30-vpn-web (400, Allow)  a30-vpn-allow-https                                           (source 172.30.0.10 only)
 ```
 
 Sources are chosen so that each row is decided by the intended rule only:
@@ -127,6 +129,7 @@ application stage.
 | A27 | client HTTPS SNI tagged.allowed.test → allowed; SNI x.allowed.test → RST | S14b | `allow-web/a27-allow-fqdntag` (`LabTag` from `fqdnTags.extra`) |
 | A28 | client → alias.test (CNAME chain → 198.51.100.11):5353/udp after DNS lookup via fw | echo | `allow-net/a28-allow-cname-fqdn` (S14a) |
 | A29 | — (load test) | | any |
+| A30 | **vpnc** WireGuard client, tunnel address 172.30.0.10 (pool 172.30.0.0/24, gateway 172.30.0.1): → 198.51.100.10:8080, → 10.2.0.10:8080, → 198.51.100.11:8080, HTTPS SNI allowed.test / other.test | SNAT to fw; no SNAT; dropped; 200; RST (S31) | `allow-a30-vpn/a30-vpn-allow-echo`, `allow-a30-vpn/a30-vpn-allow-east-west`, none, `allow-a30-vpn-web/a30-vpn-allow-https`, `deny-app/a9-a14-deny-other-https` |
 
 Deviations from the literal wording of §9.4 (needed to keep the rows
 independent within one policy): A5, A7, A14 and A22–A26 use client2 as the

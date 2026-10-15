@@ -7,8 +7,15 @@
 //
 // Topology (one Linux bridge in its own namespace, mimicking a single-NIC
 // NVA): client 10.1.0.10, client2 10.2.0.10, fw 10.0.0.4 (runs `labfw run`),
-// inet 198.51.100.10/.11, dns 10.0.0.53. Servers and client probes run in
-// the namespaces as processes of the helper binary (./cmd/helper).
+// inet 198.51.100.10/.11, dns 10.0.0.53, vpnc 203.0.113.50 (a WireGuard
+// client outside the lab, A30: tunnel 172.30.0.10, pool 172.30.0.0/24).
+// Servers and client probes run in the namespaces as processes of the
+// helper binary (./cmd/helper).
+//
+// A30 uses the wireguard kernel module when the fw namespace can create a
+// wireguard link (labfw then creates wg0 itself); otherwise the helper hosts
+// wireguard-go devices (TUN + UAPI socket, needs /dev/net/tun) and labfw
+// adopts wg0 through wgctrl's userspace support. Without either A30 skips.
 //
 // The daemon config sets dataplane.flowtable: false (some kernels, e.g.
 // sandboxed CI containers, refuse flowtables) and skipSysctl: true (the

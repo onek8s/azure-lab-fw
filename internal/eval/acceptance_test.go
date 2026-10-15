@@ -129,6 +129,16 @@ func TestAcceptance(t *testing.T) {
 			{flow: tlsHello(client, inet1, 443, "x.allowed.test"), stage: StageApp, action: ir.ActionDeny},
 		}},
 		{"A28", []step{{flow: withDNS(udp(client, inet2, 5353)), stage: StageNetwork, action: ir.ActionAllow, rule: "a28-allow-cname-fqdn"}}},
+		// A30: a WireGuard client (tunnel address 172.30.0.10, PLAN §6.8) is an
+		// ordinary source: same stages, same rules, same SNAT decisions.
+		{"A30", []step{
+			{flow: tcp(vpnClient, inet1, 8080), stage: StageNetwork, action: ir.ActionAllow, rule: "a30-vpn-allow-echo", snat: &yes},
+			{flow: tcp(vpnClient, client2, 8080), stage: StageNetwork, action: ir.ActionAllow, rule: "a30-vpn-allow-east-west", snat: &no},
+			{flow: tcp(vpnClient, inet2, 8080), stage: StageNetwork, action: ir.ActionDeny},
+			{flow: tlsHello(vpnClient, inet1, 443, "allowed.test"), stage: StageApp, action: ir.ActionAllow, rule: "a30-vpn-allow-https"},
+			{flow: tlsHello(vpnClient, inet2, 443, "other.test"), stage: StageApp, action: ir.ActionDeny, rule: "a9-a14-deny-other-https"},
+			{flow: tcp(vpnClient, fw, 3389), stage: StageDNAT, action: ir.ActionDNAT, rule: "a1-dnat-rdp"},
+		}},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -157,6 +167,9 @@ func TestAcceptance(t *testing.T) {
 		})
 	}
 }
+
+// vpnClient is the tunnel address of the A30 WireGuard client.
+const vpnClient = "172.30.0.10"
 
 func withDNS(f Flow) Flow { f.FQDNResolver = acceptanceDNS; return f }
 
