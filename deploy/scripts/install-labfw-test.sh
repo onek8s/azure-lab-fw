@@ -155,6 +155,8 @@ check_common generic
 d="$work/generic"
 if grep -q '^DNS=' "$d/etc/systemd/resolved.conf.d/50-labfw.conf"; then bad "generic: Azure DNS set"; else pass "generic: host DNS kept"; fi
 if grep -q 'conf\.lo\.' "$d/etc/sysctl.d/99-labfw.conf"; then bad "generic: sysctl for lo"; fi
+grep -q 'systemctl disable --now walinuxagent.service' "$d/log" && pass "generic: Azure agent disabled" || bad "generic: walinuxagent not disabled"
+if grep -q walinuxagent "$work/azure/log"; then bad "azure: walinuxagent touched"; fi
 ok=1
 for n in /sys/class/net/*; do
 	i="$(basename "$n")"

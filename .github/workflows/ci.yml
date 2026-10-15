@@ -43,6 +43,10 @@ jobs:
         run: bash deploy/scripts/vpn-peer-test.sh
       - name: hybrid-identity offline test (fake az)
         run: bash deploy/scripts/hybrid-identity-test.sh
+      - name: New-LabfwVM.ps1 rendering test (pwsh, no Hyper-V)
+        run: |
+          go build -o "$RUNNER_TEMP/labfw" ./cmd/labfw
+          LABFW_BIN="$RUNNER_TEMP/labfw" pwsh -NoProfile -File deploy/hyperv/New-LabfwVM.Tests.ps1
       - name: install-labfw offline test (stubs, private mount namespace)
         run: sudo bash deploy/scripts/install-labfw-test.sh
       - name: privileged tests (nft -c, netns)

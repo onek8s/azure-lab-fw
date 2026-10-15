@@ -11,7 +11,8 @@
 #
 #   azure    resolver of the VM itself = Azure DNS 168.63.129.16
 #   generic  keeps the DHCP/static DNS servers of the host (Hyper-V, KVM,
-#            Proxmox, bare metal); per-interface sysctls for the host's NICs
+#            Proxmox, bare metal); per-interface sysctls for the host's NICs;
+#            disables walinuxagent and the Azure image's 90-hotplug-azure.yaml
 #
 # Both: systemd-resolved stub listener off (the DNS proxy needs :53), OS
 # trimmed for small VMs (LABFW_TRIM=0 skips it), the labfw user joins the
@@ -160,6 +161,13 @@ DNSStubListener=no
 EOF
 fi
 ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+if [ "$platform" = generic ]; then
+	# The Ubuntu image for Azure/Hyper-V ships the Azure guest agent and a
+	# netplan file that runs DHCP on every hv_netvsc NIC; neither belongs on a
+	# two-armed firewall outside Azure (the LAN NIC has a static address).
+	systemctl disable --now walinuxagent.service 2>/dev/null || true
+	rm -f /etc/netplan/90-hotplug-azure.yaml
+fi
 systemctl restart systemd-resolved
 
 # --- 5. Service user and config --------------------------------------------
