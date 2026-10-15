@@ -182,8 +182,44 @@ func goldenCases() []goldenCase {
 	vpnEnv.DNSClients = append(vpnEnv.DNSClients, pfx("100.96.0.0/24")...)
 	vpnEnv.VPN = &VPNEnv{Iface: "wg0", ListenPort: 51820, Pool: netip.MustParsePrefix("100.96.0.1/24"), SNATToPrivate: true}
 
+	// Two-armed generic host (PLAN §8.8): uplink eth0 172.20.16.5 (DHCP,
+	// e.g. Hyper-V Default Switch), LAN eth1 192.168.250.1/24.
+	twoArmed := &ir.Policy{
+		Name: "lab-policy", SourceHash: "two-armed", PrivateRanges: ir.DefaultPrivateRanges(),
+		DNS: ir.DNSSettings{ProxyEnabled: true},
+		DNAT: []ir.NatRule{
+			{Ref: ref("d0", "dnat-coll", "rdp"), Protos: ir.ProtoTCP, Src: anyAddr, Dst: addrs("20.1.2.3"),
+				LocalDst: addrs("172.20.16.5"), DstPorts: ports(p1(3389)), ToAddr: netip.MustParseAddr("192.168.250.10"), ToPort: 3389},
+		},
+		Network: []ir.NetRule{
+			{Ref: ref("n0", "allow-coll", "lan-dns"), Action: ir.ActionAllow, Protos: ir.ProtoUDP,
+				Src: set("192.168.250.0/24"), Dst: set("1.1.1.1", "9.9.9.9"), DstPorts: ports(p1(53))},
+			{Ref: ref("n1", "allow-coll", "lan-to-host-network"), Action: ir.ActionAllow, Protos: ir.ProtoTCP,
+				Src: set("192.168.250.0/24"), Dst: set("172.20.16.0/20"), DstPorts: ports(p1(22))},
+		},
+		App: []ir.AppRule{
+			{Ref: ref("a0", "app-coll", "web"), Action: ir.ActionAllow, Src: set("192.168.250.0/24"),
+				Protocols: []ir.AppProto{{Type: ir.AppHTTP, Port: 80}, {Type: ir.AppHTTPS, Port: 443}},
+				FQDNs:     []ir.FQDNPattern{{Kind: ir.FQDNSubdomainsOnly, Name: "ubuntu.com"}}, DstAddrs: anyAddr},
+		},
+		AppPortsTCP: []uint16{80, 443},
+	}
+	twoArmedEnv := Env{
+		Iface: "eth0", InternalIfaces: []string{"eth1"}, UplinkSNAT: true, Generic: true,
+		ProxyPort: 15443, ManagementSources: pfx("192.168.250.0/24"), DNSClients: pfx("192.168.250.0/24"),
+		DNSProxy: true, CADownloadPort: 9091, Flowtable: true, LogNetAllowed: true, LogNetDenied: true, LogNAT: true,
+	}
+	twoArmedVPNEnv := twoArmedEnv
+	twoArmedVPNEnv.InternalIfaces = []string{"eth1", "eth2"}
+	twoArmedVPNEnv.UplinkSNAT = false
+	twoArmedVPNEnv.LogNetDenied = false
+	twoArmedVPNEnv.DNSClients = pfx("192.168.250.0/24", "10.0.12.0/24")
+	twoArmedVPNEnv.VPN = &VPNEnv{Iface: "wg0", ListenPort: 51820, Pool: netip.MustParsePrefix("10.0.12.1/24")}
+
 	return []goldenCase{
 		{name: "basic", p: basic, env: fullEnv()},
+		{name: "two-armed", p: twoArmed, env: twoArmedEnv},
+		{name: "two-armed-vpn", p: twoArmed, env: twoArmedVPNEnv},
 		{name: "vpn", p: app, env: vpnEnv},
 		{name: "dnat", p: dnat, env: fullEnv(), dyn: dnatDyn},
 		{name: "fqdn", p: fqdn, env: fullEnv(), dyn: fqdnDyn},
@@ -201,7 +237,6 @@ func TestGolden(t *testing.T) {
 		canCheck = false
 	}
 	ctx := context.Background()
-	flowtableOK := canCheck && dataplane.FlowtableSupported(ctx, "eth0")
 	for _, c := range goldenCases() {
 		t.Run(c.name, func(t *testing.T) {
 			got, err := Render(c.p, c.env, c.dyn)
@@ -233,7 +268,8 @@ func TestGolden(t *testing.T) {
 				return
 			}
 			check := got
-			if c.env.Flowtable && !flowtableOK {
+			devs := strings.Join(append([]string{c.env.Iface}, c.env.InternalIfaces...), ", ")
+			if c.env.Flowtable && !dataplane.FlowtableSupported(ctx, devs) {
 				t.Log("kernel has no flowtable support; checking the ruleset without flowtable")
 				env := c.env
 				env.Flowtable = false
@@ -413,5 +449,93 @@ func TestVPNRules(t *testing.T) {
 		if _, err := Render(p, e, nil); err == nil {
 			t.Errorf("accepted bad VPN env %+v", bad)
 		}
+	}
+}
+
+// TestTwoArmedRules checks the two-armed additions (PLAN §8.8): the uplink
+// only forwards DNATed connections, client services answer on the LAN side
+// (and the tunnel), the flowtable spans all forwarding interfaces, allowed
+// traffic leaving the uplink is masqueraded, and the platform generic input
+// rules (DHCP instead of the Azure wire server).
+func TestTwoArmedRules(t *testing.T) {
+	p := &ir.Policy{Name: "p", PrivateRanges: ir.DefaultPrivateRanges(), DNS: ir.DNSSettings{ProxyEnabled: true}}
+	env := fullEnv()
+	env.InternalIfaces = []string{"eth1"}
+	env.UplinkSNAT = true
+	env.Generic = true
+	env.VPN = &VPNEnv{Iface: "wg0", ListenPort: 51820, Pool: netip.MustParsePrefix("10.0.12.1/24")}
+	out, err := Render(p, env, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`iifname "eth0" ct mark set 0x2 limit rate 50/second burst 100 packets log prefix "n-default" group 2`,
+		`iifname "eth0" accept comment "uplink: DNAT only"`,
+		`devices = { eth0, eth1 };`,
+		`iifname { "eth1", "wg0" } ip saddr @dns_clients meta l4proto { tcp, udp } th dport 53 accept`,
+		`iifname { "eth1", "wg0" } ip saddr @dns_clients tcp dport 9091 accept`,
+		`ct mark 0x1 oifname "eth0" masquerade comment "uplink SNAT"`,
+		`iifname "eth0" udp dport 51820 accept comment "VPN"`,
+		`udp sport 67 udp dport 68 accept comment "DHCP client"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "168.63.129.16") {
+		t.Error("Azure wire server rule rendered on platform generic")
+	}
+	// The uplink restriction comes after the local-traffic return and
+	// before stage 2.
+	up := strings.Index(s, `iifname "eth0" accept`)
+	if up < strings.Index(s, "fib daddr type { local") || up > strings.Index(s, "# Stage 2") {
+		t.Error("uplink rule misplaced")
+	}
+
+	env.UplinkSNAT, env.LogNetDenied, env.VPN = false, false, nil
+	s2, _ := Render(p, env, nil)
+	if strings.Contains(string(s2), "uplink SNAT") || !strings.Contains(string(s2), `iifname "eth0" ct mark set 0x2 accept comment "uplink: DNAT only"`) ||
+		!strings.Contains(string(s2), `iifname "eth1" ip saddr @dns_clients`) {
+		t.Errorf("uplinkSNAT off / no deny logging / no VPN:\n%s", s2)
+	}
+
+	// One-armed Azure output has none of it.
+	one, _ := Render(p, fullEnv(), nil)
+	for _, bad := range []string{"uplink", "DHCP client", "iifname"} {
+		if strings.Contains(string(one), bad) {
+			t.Errorf("one-armed ruleset contains %q:\n%s", bad, one)
+		}
+	}
+	if !strings.Contains(string(one), `ip saddr 168.63.129.16 accept comment "Azure platform"`) {
+		t.Error("Azure wire server rule missing on platform azure")
+	}
+
+	for _, bad := range []Env{
+		{InternalIfaces: []string{"eth1"}},
+		{Iface: "eth0", InternalIfaces: []string{"eth0"}},
+		{Iface: "eth0", InternalIfaces: []string{"eth1;"}},
+		{Iface: "eth0", InternalIfaces: []string{"wg0"}, VPN: &VPNEnv{Iface: "wg0", ListenPort: 1, Pool: netip.MustParsePrefix("10.0.12.0/24")}},
+	} {
+		if _, err := Render(p, bad, nil); err == nil {
+			t.Errorf("accepted bad env %+v", bad)
+		}
+	}
+}
+
+func TestEnvFromConfigTwoArmed(t *testing.T) {
+	c := config.Default()
+	c.Platform = config.PlatformGeneric
+	c.Network.InternalInterfaces = []string{"eth1"}
+	env, err := EnvFromConfig(&c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !env.Generic || !env.UplinkSNAT || len(env.InternalIfaces) != 1 || env.InternalIfaces[0] != "eth1" || env.Iface != "eth0" {
+		t.Fatalf("env = %+v", env)
+	}
+	c = config.Default()
+	if env, _ = EnvFromConfig(&c, nil); env.Generic || len(env.InternalIfaces) != 0 {
+		t.Fatalf("azure env = %+v", env)
 	}
 }

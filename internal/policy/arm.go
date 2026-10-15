@@ -45,7 +45,7 @@ type ARMSource struct {
 	Client     ARMClient
 	PolicyID   string
 	APIVersion string
-	// Location selects the service tag region. If empty, LocationFunc (IMDS)
+	// Location selects the service tag region (config azure.location). If empty, LocationFunc (IMDS, platform azure)
 	// is consulted, then the leaf policy's location.
 	Location     string
 	LocationFunc func(ctx context.Context) (string, error)
@@ -289,7 +289,7 @@ func (s *ARMSource) download(ctx context.Context, b *Bundle) (json.RawMessage, e
 		}
 	}
 	if loc == "" {
-		return nil, errors.New("policy: no location for service tags (set it via IMDS or the policy location)")
+		return nil, errors.New("policy: no location for service tags (set azure.location; IMDS and the policy location gave none)")
 	}
 	raw, err := s.Client.FetchServiceTags(ctx, sub, loc)
 	if err != nil {

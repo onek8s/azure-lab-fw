@@ -48,8 +48,13 @@ type Config struct {
 	// Listen addresses ("10.0.0.4:53", ":53"); each gets a UDP and a TCP
 	// listener. Ignored when Enabled is false.
 	Listen []string
-	// Upstreams are tried in order ("ip" or "ip:port"); default Azure DNS.
+	// Upstreams are tried in order ("ip" or "ip:port"); default Azure DNS
+	// unless NoDefaultUpstream is set.
 	Upstreams []string
+	// NoDefaultUpstream keeps an empty Upstreams list empty (platform
+	// generic: never fall back to Azure DNS; queries then fail with
+	// SERVFAIL).
+	NoDefaultUpstream bool
 	// MinSetTTL is the minimum nft element timeout for snooped addresses.
 	MinSetTTL time.Duration
 	// MaxCacheTTL caps how long any answer is cached.
@@ -66,7 +71,7 @@ type Config struct {
 }
 
 func (c *Config) applyDefaults() {
-	if len(c.Upstreams) == 0 {
+	if len(c.Upstreams) == 0 && !c.NoDefaultUpstream {
 		c.Upstreams = []string{DefaultUpstream}
 	}
 	ups := make([]string, 0, len(c.Upstreams))
@@ -204,6 +209,9 @@ func (p *Proxy) SetIndex(idx *Index) {
 	default:
 	}
 }
+
+// Upstreams returns the upstream servers in use ("ip:port").
+func (p *Proxy) Upstreams() []string { return slices.Clone(p.cfg.Upstreams) }
 
 // Index returns the current index.
 func (p *Proxy) Index() *Index { return p.index.Load() }

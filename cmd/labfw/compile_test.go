@@ -110,3 +110,17 @@ func TestExplainBypassFQDNs(t *testing.T) {
 		t.Errorf("allowed.test: rc=%d\n%s", rc, out)
 	}
 }
+
+// dnatAddressMap "interface" (platform generic) stands for the first local
+// IP offline.
+func TestExplainDNATInterface(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	y := "platform: generic\npolicy:\n  source: file\n  file: " + acceptancePolicy + "\nnetwork:\n  dnatAddressMap: {\"*\": interface}\n"
+	if err := os.WriteFile(cfg, []byte(y), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc, out, errs := run(t, "explain", "--config", cfg, "--local-ip", "172.20.16.5", "--src", "198.51.100.10", "--dst", "172.20.16.5", "--port", "3389")
+	if rc != 0 || !strings.Contains(out, "stage=dnat  action=DNAT") || !strings.Contains(out, "dnat=10.1.0.10:3389") {
+		t.Fatalf("rc=%d err=%s out=%s", rc, errs, out)
+	}
+}

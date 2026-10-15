@@ -49,8 +49,23 @@ const maxCommentLen = 128
 // Env holds host/config facts the ruleset depends on that are not part of
 // the policy.
 type Env struct {
-	// Iface is the single NIC (flowtable device). Required when Flowtable is set.
+	// Iface is the single NIC (one-armed, Azure) or the WAN uplink
+	// (two-armed). Required when Flowtable is set or InternalIfaces is not
+	// empty.
 	Iface string
+	// InternalIfaces are the LAN-side NICs of a two-armed firewall (PLAN
+	// §8.8); empty = one-armed. With them, new forwarded connections from
+	// the uplink are accepted only when DNATed, the DNS proxy and CA
+	// download answer only on the internal (and VPN) interfaces, and all of
+	// them join the flowtable.
+	InternalIfaces []string
+	// UplinkSNAT (two-armed only) masquerades every allowed forwarded
+	// connection leaving through the uplink, also toward private
+	// destinations on the WAN side, which have no route back to the LAN.
+	UplinkSNAT bool
+	// Generic is platform generic: no Azure wire server (168.63.129.16)
+	// rule; DHCP replies are accepted on input instead.
+	Generic bool
 	// ProxyPort is the app proxy listen port (REDIRECT target, §6.4).
 	// Required when the policy has application rules.
 	ProxyPort uint16
@@ -89,12 +104,15 @@ type VPNEnv struct {
 // VM itself is recognised with `fib daddr type local`.
 func EnvFromConfig(c *config.Config, p *ir.Policy) (Env, error) {
 	env := Env{
-		Iface:         c.Network.Interface,
-		DNSProxy:      c.DNS.ForceEnable || (p != nil && p.DNS.ProxyEnabled),
-		Flowtable:     c.Dataplane.Flowtable,
-		LogNetAllowed: c.Logging.Network.Allowed,
-		LogNetDenied:  c.Logging.Network.Denied,
-		LogNAT:        c.Logging.NAT,
+		Iface:          c.Network.Interface,
+		InternalIfaces: slices.Clone(c.Network.InternalInterfaces),
+		UplinkSNAT:     c.Network.UplinkSNAT,
+		Generic:        c.IsGeneric(),
+		DNSProxy:       c.DNS.ForceEnable || (p != nil && p.DNS.ProxyEnabled),
+		Flowtable:      c.Dataplane.Flowtable,
+		LogNetAllowed:  c.Logging.Network.Allowed,
+		LogNetDenied:   c.Logging.Network.Denied,
+		LogNAT:         c.Logging.NAT,
 	}
 	var err error
 	if env.ProxyPort, err = listenPort(c.AppProxy.Listen); err != nil {
@@ -233,6 +251,8 @@ func Render(p *ir.Policy, env Env, dyn DynamicSets) ([]byte, error) {
 			return nil, fmt.Errorf("nft: invalid VPN interface name %q", v.Iface)
 		case v.Iface == env.Iface:
 			return nil, errors.New("nft: VPN interface must differ from the uplink interface")
+		case slices.Contains(env.InternalIfaces, v.Iface):
+			return nil, errors.New("nft: VPN interface must differ from the internal interfaces")
 		case v.ListenPort == 0:
 			return nil, errors.New("nft: VPN listen port is 0")
 		case !v.Pool.IsValid() || !v.Pool.Addr().Is4():
@@ -242,6 +262,14 @@ func Render(p *ir.Policy, env Env, dyn DynamicSets) ([]byte, error) {
 	}
 	if env.Iface != "" && !ifaceRE.MatchString(env.Iface) {
 		return nil, fmt.Errorf("nft: invalid interface name %q", env.Iface)
+	}
+	if len(env.InternalIfaces) > 0 && env.Iface == "" {
+		return nil, errors.New("nft: two-armed mode needs the uplink interface")
+	}
+	for _, ifc := range env.InternalIfaces {
+		if !ifaceRE.MatchString(ifc) || ifc == env.Iface {
+			return nil, fmt.Errorf("nft: invalid internal interface %q", ifc)
+		}
 	}
 	r := &renderer{p: p, env: env, dyn: dyn, byKey: map[string]string{}, names: map[string]bool{}}
 	return r.render(), nil
@@ -281,6 +309,20 @@ func (r *renderer) render() []byte {
 	}
 	pre.WriteString("\n\t\t# Traffic addressed to the firewall itself is not classified (DNAT above excepted).\n")
 	pre.WriteString("\t\tfib daddr type { local, broadcast, multicast } return\n")
+	if len(env.InternalIfaces) > 0 {
+		// Two-armed: the uplink is the "Internet side" of the firewall; as
+		// with Azure Firewall's public IP, only DNAT (above) reaches the LAN
+		// from there (PLAN §8.8).
+		pre.WriteString("\n\t\t# Two-armed: new connections from the uplink are forwarded only when DNATed (PLAN §8.8)\n")
+		iif := "iifname " + quote(env.Iface)
+		if env.LogNetDenied {
+			fmt.Fprintf(&pre, "\t\t%s ct mark set %s limit rate 50/second burst 100 packets log prefix %q group %d\n",
+				iif, mark(MarkDeny), DefaultDenyPrefix, LogGroupNetwork)
+			fmt.Fprintf(&pre, "\t\t%s accept comment \"uplink: DNAT only\"\n", iif)
+		} else {
+			fmt.Fprintf(&pre, "\t\t%s ct mark set %s accept comment \"uplink: DNAT only\"\n", iif, mark(MarkDeny))
+		}
+	}
 	pre.WriteString("\n\t\t# Stage 2: network rules (S2, S5-S7, S15)\n")
 	for i := range p.Network {
 		r.renderNet(&pre, &p.Network[i])
@@ -309,7 +351,8 @@ func (r *renderer) render() []byte {
 	out.WriteString(pre.String())
 
 	if env.Flowtable {
-		fmt.Fprintf(&out, "\n\tflowtable ft {\n\t\thook ingress priority 0; devices = { %s };\n\t}\n", env.Iface)
+		fmt.Fprintf(&out, "\n\tflowtable ft {\n\t\thook ingress priority 0; devices = { %s };\n\t}\n",
+			strings.Join(append([]string{env.Iface}, env.InternalIfaces...), ", "))
 	}
 
 	fwdMarks := fmt.Sprintf("{ %s, %s }", mark(MarkAllow), mark(MarkDNAT))
@@ -337,7 +380,11 @@ func (r *renderer) render() []byte {
 	out.WriteString("\t\tmeta nfproto ipv6 drop\n")
 	out.WriteString("\t\tct state invalid drop\n")
 	out.WriteString("\t\tct state established,related accept\n")
-	fmt.Fprintf(&out, "\t\tip saddr %s accept comment \"Azure platform\"\n", AzurePlatformIP)
+	if env.Generic {
+		out.WriteString("\t\tudp sport 67 udp dport 68 accept comment \"DHCP client\"\n")
+	} else {
+		fmt.Fprintf(&out, "\t\tip saddr %s accept comment \"Azure platform\"\n", AzurePlatformIP)
+	}
 	if v := env.VPN; v != nil {
 		vpnAntiSpoof(&out, v)
 		if env.Iface != "" {
@@ -349,8 +396,21 @@ func (r *renderer) render() []byte {
 	if len(appPorts) > 0 {
 		fmt.Fprintf(&out, "\t\tct mark %s tcp dport %d accept comment \"app proxy\"\n", mark(MarkApp), env.ProxyPort)
 	}
+	// Two-armed: client services answer only on the LAN side (and the tunnel).
+	lan := ""
+	if len(env.InternalIfaces) > 0 {
+		ifs := slices.Clone(env.InternalIfaces)
+		if env.VPN != nil {
+			ifs = append(ifs, env.VPN.Iface)
+		}
+		qs := make([]string, len(ifs))
+		for i, n := range ifs {
+			qs[i] = quote(n)
+		}
+		lan = "iifname " + nameSet(qs) + " "
+	}
 	if len(dnsClients) > 0 && env.DNSProxy {
-		out.WriteString("\t\tip saddr @dns_clients meta l4proto { tcp, udp } th dport 53 accept comment \"DNS proxy\"\n")
+		fmt.Fprintf(&out, "\t\t%sip saddr @dns_clients meta l4proto { tcp, udp } th dport 53 accept comment \"DNS proxy\"\n", lan)
 	}
 	if len(mgmt) > 0 {
 		fmt.Fprintf(&out, "\t\tip saddr @mgmt_src tcp dport %d accept comment \"management\"\n", env.SSHPort)
@@ -358,7 +418,7 @@ func (r *renderer) render() []byte {
 		out.WriteString("\t\t# no management sources configured: SSH closed\n")
 	}
 	if len(dnsClients) > 0 && env.CADownloadPort != 0 {
-		fmt.Fprintf(&out, "\t\tip saddr @dns_clients tcp dport %d accept comment \"CA download\"\n", env.CADownloadPort)
+		fmt.Fprintf(&out, "\t\t%sip saddr @dns_clients tcp dport %d accept comment \"CA download\"\n", lan, env.CADownloadPort)
 	}
 	out.WriteString("\t\ticmp type echo-request limit rate 10/second accept\n")
 	out.WriteString("\t}\n")
@@ -369,6 +429,9 @@ func (r *renderer) render() []byte {
 		fmt.Fprintf(&out, "\t\tct mark %s ip daddr != @private_ranges masquerade comment \"S19\"\n", mark(MarkAllow))
 	} else {
 		fmt.Fprintf(&out, "\t\tct mark %s masquerade comment \"S19\"\n", mark(MarkAllow))
+	}
+	if len(env.InternalIfaces) > 0 && env.UplinkSNAT {
+		fmt.Fprintf(&out, "\t\tct mark %s oifname %s masquerade comment \"uplink SNAT\"\n", mark(MarkAllow), quote(env.Iface))
 	}
 	if v := env.VPN; v != nil && v.SNATToPrivate {
 		fmt.Fprintf(&out, "\t\tct mark %s ip saddr %s oifname != %s masquerade comment \"VPN snatToPrivate\"\n",

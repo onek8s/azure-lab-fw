@@ -21,7 +21,9 @@ const maxStatusDiagnostics = 200
 
 // Status is the /status document.
 type Status struct {
-	Health            string          `json:"health"` // ok | degraded
+	Health            string          `json:"health"`   // ok | degraded
+	Platform          string          `json:"platform"` // azure | generic (PLAN §8.8)
+	Network           NetworkStatus   `json:"network"`
 	Policy            string          `json:"policy,omitempty"`
 	SourceHash        string          `json:"sourceHash,omitempty"`
 	FromLKG           bool            `json:"fromLastKnownGood"`
@@ -51,13 +53,21 @@ type RuleCounts struct {
 	App     int `json:"application"`
 }
 
+// NetworkStatus describes the interfaces and the host addresses in use.
+type NetworkStatus struct {
+	Uplink             string   `json:"uplink"`
+	InternalInterfaces []string `json:"internalInterfaces,omitempty"` // two-armed (PLAN §8.8)
+	LocalIPs           []string `json:"localIPs,omitempty"`
+}
+
 // DNSStatus describes the DNS proxy.
 type DNSStatus struct {
-	Running       bool   `json:"running"`
-	Serving       bool   `json:"serving"`
-	IndexedFQDNs  int    `json:"indexedFqdns"`
-	Queries       uint64 `json:"queries"`
-	ListenAddress string `json:"listen,omitempty"`
+	Running       bool     `json:"running"`
+	Serving       bool     `json:"serving"`
+	IndexedFQDNs  int      `json:"indexedFqdns"`
+	Queries       uint64   `json:"queries"`
+	ListenAddress string   `json:"listen,omitempty"`
+	Upstreams     []string `json:"upstreams,omitempty"`
 }
 
 // NFLogStatus are NFLOG reader counters.
@@ -93,7 +103,10 @@ func (d *Daemon) Status() Status {
 	st := d.st
 	d.stMu.Unlock()
 	s := Status{
-		Health:       "ok",
+		Health:   "ok",
+		Platform: d.cfg.Platform,
+		Network: NetworkStatus{Uplink: d.cfg.Network.Interface, InternalInterfaces: d.cfg.Network.InternalInterfaces,
+			LocalIPs: st.localIPs},
 		FromLKG:      st.fromLKG,
 		LastRefresh:  timePtr(st.lastRefresh),
 		LastSuccess:  timePtr(st.lastSuccess),
@@ -118,6 +131,7 @@ func (d *Daemon) Status() Status {
 		s.DNS.Running = true
 		s.DNS.Serving = len(px.Addrs()) > 0
 		s.DNS.IndexedFQDNs = px.Index().Len()
+		s.DNS.Upstreams = px.Upstreams()
 		if s.DNS.Serving {
 			s.DNS.ListenAddress = px.Addrs()[0].String()
 		}
