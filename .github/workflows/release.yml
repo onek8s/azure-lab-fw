@@ -52,7 +52,7 @@ jobs:
               -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${commit}" \
               -o "${stage}/labfw" ./cmd/labfw
             cp -r packaging "${stage}/packaging"
-            cp LICENSE README.md "${stage}/"
+            cp LICENSE THIRD_PARTY_LICENSES README.md "${stage}/"
             tar -C dist --owner=0 --group=0 --sort=name -czf "dist/${name}.tar.gz" "${name}"
           done
           (cd dist && sha256sum labfw_*.tar.gz >checksums.txt)

@@ -4,7 +4,7 @@ COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 LDFLAGS   := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 export CGO_ENABLED=0
 
-.PHONY: build build-all test lint fmt test-netns bench-b1ls clean
+.PHONY: build build-all test lint fmt test-netns bench-b1ls clean licenses third-party-licenses
 
 build:
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/labfw ./cmd/labfw
@@ -23,6 +23,21 @@ lint:
 
 fmt:
 	gofmt -w .
+
+# Fail if any package linked into the binary has a copyleft or unknown licence.
+licenses:
+	go run github.com/google/go-licenses@v1.6.0 check ./cmd/labfw --disallowed_types=forbidden,restricted,reciprocal,unknown
+
+# Regenerate THIRD_PARTY_LICENSES (shipped in the release tarball).
+third-party-licenses:
+	rm -rf build/licenses && go run github.com/google/go-licenses@v1.6.0 save ./cmd/labfw --save_path=build/licenses --force
+	{ echo "Third-party licences for the labfw binary"; echo; \
+	  echo "Generated with go-licenses from the packages linked into cmd/labfw."; \
+	  echo "Regenerate: make third-party-licenses"; \
+	  for f in $$(cd build/licenses && find . -type f \( -name 'LICENSE*' -o -name 'COPYING*' \) | sort); do \
+	    echo; echo "================================================================================"; \
+	    echo "$$(dirname "$${f#./}")"; echo "================================================================================"; echo; \
+	    cat "build/licenses/$$f"; done; } > THIRD_PARTY_LICENSES
 
 # Privileged network-namespace integration tests (PLAN §9.2). Requires root,
 # iproute2, nftables and conntrack. NETNS_ARTIFACT_DIR keeps daemon logs.
