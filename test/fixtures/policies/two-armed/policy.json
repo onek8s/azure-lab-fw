@@ -1,0 +1,192 @@
+{
+  "policies": [
+    {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/two-armed-policy",
+      "name": "two-armed-policy",
+      "type": "Microsoft.Network/FirewallPolicies",
+      "location": "swedencentral",
+      "etag": "00000000-0000-0000-0000-0000000000c1",
+      "properties": {
+        "provisioningState": "Succeeded",
+        "sku": {
+          "tier": "Standard"
+        },
+        "threatIntelMode": "Alert",
+        "ruleCollectionGroups": [
+          {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/two-armed-policy/ruleCollectionGroups/two-armed-rcg"
+          }
+        ],
+        "dnsSettings": {
+          "servers": [],
+          "enableProxy": true
+        }
+      }
+    }
+  ],
+  "ruleCollectionGroups": {
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/two-armed-policy": [
+      {
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-lab/providers/Microsoft.Network/firewallPolicies/two-armed-policy/ruleCollectionGroups/two-armed-rcg",
+        "name": "two-armed-rcg",
+        "type": "Microsoft.Network/FirewallPolicies/RuleCollectionGroups",
+        "etag": "00000000-0000-0000-0000-0000000000c2",
+        "properties": {
+          "provisioningState": "Succeeded",
+          "priority": 100,
+          "ruleCollections": [
+            {
+              "ruleCollectionType": "FirewallPolicyNatRuleCollection",
+              "name": "dnat-wan",
+              "priority": 100,
+              "action": {
+                "type": "DNAT"
+              },
+              "rules": [
+                {
+                  "ruleType": "NatRule",
+                  "name": "w1-dnat-rdp",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "*"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "20.0.0.1"
+                  ],
+                  "destinationPorts": [
+                    "3389"
+                  ],
+                  "translatedPort": "3389",
+                  "translatedAddress": "192.168.250.10"
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-net",
+              "priority": 200,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "w2-lan-to-public-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "192.168.250.0/24"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "198.51.100.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "w3-lan-to-wan-private-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "192.168.250.0/24"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "172.20.16.1"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "w4-wan-to-lan-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "172.20.16.0/24"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "192.168.250.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                },
+                {
+                  "ruleType": "NetworkRule",
+                  "name": "w6-vpn-to-lan-echo",
+                  "ipProtocols": [
+                    "TCP"
+                  ],
+                  "sourceAddresses": [
+                    "10.0.12.0/24"
+                  ],
+                  "sourceIpGroups": [],
+                  "destinationAddresses": [
+                    "192.168.250.10"
+                  ],
+                  "destinationIpGroups": [],
+                  "destinationFqdns": [],
+                  "destinationPorts": [
+                    "8080"
+                  ]
+                }
+              ]
+            },
+            {
+              "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+              "name": "allow-web",
+              "priority": 300,
+              "action": {
+                "type": "Allow"
+              },
+              "rules": [
+                {
+                  "ruleType": "ApplicationRule",
+                  "name": "w5-http-allowed",
+                  "protocols": [
+                    {
+                      "protocolType": "Http",
+                      "port": 80
+                    }
+                  ],
+                  "sourceAddresses": [
+                    "192.168.250.0/24"
+                  ],
+                  "sourceIpGroups": [],
+                  "targetFqdns": [
+                    "allowed.test"
+                  ],
+                  "targetUrls": [],
+                  "fqdnTags": [],
+                  "webCategories": [],
+                  "terminateTLS": false,
+                  "destinationAddresses": [],
+                  "httpHeadersToInsert": []
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "ipGroups": []
+}

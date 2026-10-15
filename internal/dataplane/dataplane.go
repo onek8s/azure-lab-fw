@@ -44,11 +44,12 @@ func Remove(ctx context.Context) error {
 }
 
 // FlowtableSupported reports whether the kernel accepts a flowtable on
-// iface (nf_flow_table may be missing); the daemon renders without the
-// flowtable otherwise (§6.2).
-func FlowtableSupported(ctx context.Context, iface string) bool {
+// devices ("eth0" or a list "eth0, eth1"; nf_flow_table may be missing or
+// an interface absent); the daemon renders without the flowtable otherwise
+// (§6.2).
+func FlowtableSupported(ctx context.Context, devices string) bool {
 	probe := fmt.Sprintf("table inet %s_probe {\n\tflowtable ft {\n\t\thook ingress priority 0; devices = { %s };\n\t}\n}\n",
-		Table, iface)
+		Table, devices)
 	return Check(ctx, []byte(probe)) == nil
 }
 
@@ -101,8 +102,10 @@ func Sysctls(cfg *config.Config) []Sysctl {
 		{[]string{"net", "ipv4", "conf", "all", "send_redirects"}, "0"},
 		{[]string{"net", "ipv4", "conf", "default", "send_redirects"}, "0"},
 	}
-	if iface := cfg.Network.Interface; iface != "" && !strings.ContainsAny(iface, "/") && iface != "." && iface != ".." {
-		out = append(out, Sysctl{[]string{"net", "ipv4", "conf", iface, "send_redirects"}, "0"})
+	for _, iface := range cfg.Interfaces() {
+		if iface != "" && !strings.ContainsAny(iface, "/") && iface != "." && iface != ".." {
+			out = append(out, Sysctl{[]string{"net", "ipv4", "conf", iface, "send_redirects"}, "0"})
+		}
 	}
 	out = append(out,
 		Sysctl{[]string{"net", "ipv4", "conf", "all", "rp_filter"}, "2"},

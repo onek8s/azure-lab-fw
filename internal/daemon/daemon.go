@@ -45,7 +45,7 @@ type Applier interface {
 // the kernel supports a flowtable on the interface (§6.2). Appliers that do
 // not implement it are assumed to support it.
 type FlowtableProber interface {
-	FlowtableSupported(ctx context.Context, iface string) bool
+	FlowtableSupported(ctx context.Context, devices string) bool
 }
 
 // DataplaneApplier is the internal/dataplane Applier.
@@ -63,8 +63,8 @@ func (DataplaneApplier) FlushConntrack(ctx context.Context) error {
 }
 
 // FlowtableSupported implements FlowtableProber.
-func (DataplaneApplier) FlowtableSupported(ctx context.Context, iface string) bool {
-	return dataplane.FlowtableSupported(ctx, iface)
+func (DataplaneApplier) FlowtableSupported(ctx context.Context, devices string) bool {
+	return dataplane.FlowtableSupported(ctx, devices)
 }
 
 // Deps are the injectable collaborators of a Daemon. Zero values select the
@@ -84,6 +84,12 @@ type Deps struct {
 	Azure *azure.Client
 	// LocalIPs overrides VM private IP detection.
 	LocalIPs []netip.Addr
+	// InterfaceAddrs returns the IPv4 addresses of an interface (tests);
+	// nil = the host's interfaces.
+	InterfaceAddrs func(name string) []netip.Addr
+	// HostResolvers returns the host's DNS servers used as DNS proxy
+	// upstreams on platform generic (tests); nil = dnsproxy.HostResolvers.
+	HostResolvers func() []string
 	// DisableNFLog does not start the NFLOG reader (tests without netlink).
 	DisableNFLog bool
 	// Logger is the operational logger; nil = slog.Default().
@@ -133,6 +139,7 @@ type Daemon struct {
 	flowtable   bool
 	localIPs    []netip.Addr
 	bundleHash  string
+	envKey      string // host facts the compiled policy depends on (local IPs, uplink address)
 	dnatTargets map[string]netip.Addr
 	dnsKey      string
 	caKVID      string
@@ -164,6 +171,7 @@ type state struct {
 	caSource                            string
 	caWarnings                          []string
 	vpn                                 vpnState
+	localIPs                            []string
 }
 
 // New creates a daemon. It does not touch the system until Start.
@@ -236,12 +244,22 @@ func New(cfg *config.Config, deps Deps) (*Daemon, error) {
 	return d, nil
 }
 
-// NewAzureClient creates the Azure client (managed identity → Azure CLI).
-// If no credential can be created the returned client still serves IMDS
-// and the error is returned alongside it.
+// CredentialOptions maps the azure section to azure.CredentialOptions.
+func CredentialOptions(cfg *config.Config, logger *slog.Logger) azure.CredentialOptions {
+	a := cfg.Azure
+	return azure.CredentialOptions{Auth: a.Auth, Generic: cfg.IsGeneric(), ClientID: a.ClientID, TenantID: a.TenantID,
+		CertificateFile: a.CertificateFile, CertificatePasswordFile: a.CertificatePasswordFile,
+		ClientSecretFile: a.ClientSecretFile, Logger: logger}
+}
+
+// NewAzureClient creates the Azure client with the azure.auth credential
+// (default: managed identity → Azure CLI). If no credential can be created
+// the returned client still serves IMDS and the error is returned alongside
+// it. On platform generic the client never calls IMDS (the daemon does not
+// ask it to).
 func NewAzureClient(cfg *config.Config, logger *slog.Logger) (*azure.Client, error) {
 	opts := azure.Options{APIVersion: cfg.Policy.APIVersion, Logger: logger}
-	cred, cerr := azure.NewCredential(cfg.Azure.ClientID)
+	cred, cerr := azure.NewCredentialFromOptions(CredentialOptions(cfg, logger))
 	if cerr != nil {
 		c, err := azure.New(nil, opts)
 		if err != nil {
@@ -263,12 +281,17 @@ func NewSource(cfg *config.Config, client *azure.Client, logger *slog.Logger) (p
 		}
 		s := policy.NewARMSource(client, cfg.Policy.ResourceID, cfg.Policy.APIVersion, cfg.StateDir)
 		s.Logger = logger
-		s.LocationFunc = func(ctx context.Context) (string, error) {
-			md, err := client.GetInstanceMetadata(ctx)
-			if err != nil {
-				return "", err
+		// Service tag region: azure.location, else IMDS (platform azure
+		// only; generic never calls IMDS), else the policy's location.
+		s.Location = cfg.Azure.Location
+		if !cfg.IsGeneric() {
+			s.LocationFunc = func(ctx context.Context) (string, error) {
+				md, err := client.GetInstanceMetadata(ctx)
+				if err != nil {
+					return "", err
+				}
+				return md.Location, nil
 			}
-			return md.Location, nil
 		}
 		return s, nil
 	}
@@ -367,8 +390,10 @@ func (d *Daemon) Start(ctx context.Context) error {
 		}
 	}
 	d.flowtable = d.cfg.Dataplane.Flowtable
-	if pr, ok := d.applier.(FlowtableProber); ok && d.flowtable && !pr.FlowtableSupported(ctx, d.cfg.Network.Interface) {
-		d.log.Warn("kernel refuses a flowtable; rendering without it", "iface", d.cfg.Network.Interface)
+	// Every forwarding interface joins the flowtable (uplink + internal).
+	devs := strings.Join(d.cfg.Interfaces(), ", ")
+	if pr, ok := d.applier.(FlowtableProber); ok && d.flowtable && !pr.FlowtableSupported(ctx, devs) {
+		d.log.Warn("kernel refuses a flowtable; rendering without it", "devices", devs)
 		d.flowtable = false
 	}
 	if d.sw == nil {
@@ -564,7 +589,8 @@ func (d *Daemon) Refresh(ctx context.Context) error {
 		return d.fail("fetch", err, nil)
 	}
 	h := b.Hash()
-	if h == d.bundleHash && d.policy.Load() != nil {
+	opts, envKey := d.compileOptions(ctx)
+	if h == d.bundleHash && envKey == d.envKey && d.policy.Load() != nil {
 		d.setSuccess(nil, false)
 		return nil
 	}
@@ -573,7 +599,7 @@ func (d *Daemon) Refresh(ctx context.Context) error {
 		return d.fail("compile", err, nil)
 	}
 	start := time.Now()
-	p, err := resolve.Compile(b, leaf, d.compileOptions(ctx))
+	p, err := resolve.Compile(b, leaf, opts)
 	if err != nil {
 		var ce *resolve.Error
 		var diags []ir.Diagnostic
@@ -584,14 +610,14 @@ func (d *Daemon) Refresh(ctx context.Context) error {
 	}
 	if cur := d.policy.Load(); cur != nil && cur.SourceHash == p.SourceHash {
 		// Same compiled policy (e.g. restart after LKG): nothing to apply.
-		d.bundleHash = h
+		d.bundleHash, d.envKey = h, envKey
 		d.setSuccess(p.Warnings, false)
 		return nil
 	}
 	if err := d.install(ctx, p, true); err != nil {
 		return d.fail("apply", err, p.Warnings)
 	}
-	d.bundleHash = h
+	d.bundleHash, d.envKey = h, envKey
 	d.reloads.Add(1)
 	d.setSuccess(p.Warnings, true)
 	d.log.Info("policy applied", "policy", p.Name, "sourceHash", p.SourceHash, "dnat", len(p.DNAT),
@@ -599,19 +625,43 @@ func (d *Daemon) Refresh(ctx context.Context) error {
 	return nil
 }
 
-func (d *Daemon) compileOptions(ctx context.Context) resolve.Options {
-	if len(d.localIPs) == 0 {
+// compileOptions returns the resolver options and a key of the host facts
+// they contain (local IPs, uplink address); a changed key recompiles the
+// policy even when the bundle is unchanged. On platform generic without
+// network.localIPs the addresses are re-read from the interface on every
+// refresh (DHCP uplink), and the "interface" dnatAddressMap value always
+// follows the uplink's current first IPv4 address.
+func (d *Daemon) compileOptions(ctx context.Context) (resolve.Options, string) {
+	redetect := d.cfg.IsGeneric() && len(d.cfg.Network.LocalIPs) == 0 && len(d.deps.LocalIPs) == 0
+	if len(d.localIPs) == 0 || redetect {
+		prev := d.localIPs
 		if len(d.deps.LocalIPs) > 0 {
 			d.localIPs = d.deps.LocalIPs
 		} else {
 			d.localIPs = d.detectLocalIPs(ctx)
 		}
-		if len(d.localIPs) == 0 {
+		if len(d.localIPs) == 0 && (len(prev) > 0 || d.envKey == "") {
 			d.log.Warn("no VM private IP found; DNAT rules mapped to 'primary' cannot be enforced", "iface", d.cfg.Network.Interface)
 		}
 	}
+	var uplink netip.Addr
+	if d.cfg.UsesDNATInterface() {
+		if a := d.ifaceAddrs(d.cfg.Network.Interface); len(a) > 0 {
+			uplink = a[0]
+		} else {
+			d.log.Warn("network.interface has no IPv4 address; DNAT rules mapped to 'interface' are skipped", "iface", d.cfg.Network.Interface)
+		}
+	}
+	key := fmt.Sprintf("%v|%v", d.localIPs, uplink)
+	ips := make([]string, 0, len(d.localIPs))
+	for _, a := range d.localIPs {
+		ips = append(ips, a.String())
+	}
+	d.stMu.Lock()
+	d.st.localIPs = ips
+	d.stMu.Unlock()
 	return resolve.Options{
-		DNATAddressMap: d.cfg.Network.DNATAddressMap,
+		DNATAddressMap: d.cfg.EffectiveDNATAddressMap(uplink),
 		LocalIPs:       d.localIPs,
 		TagExpander:    d.tags,
 		Unsupported: resolve.Unsupported{
@@ -619,7 +669,14 @@ func (d *Daemon) compileOptions(ctx context.Context) resolve.Options {
 			AllowSkippingDenyRules: d.cfg.Unsupported.AllowSkippingDenyRules,
 		},
 		HasCA: d.issuer.Loaded(),
+	}, key
+}
+
+func (d *Daemon) ifaceAddrs(name string) []netip.Addr {
+	if d.deps.InterfaceAddrs != nil {
+		return d.deps.InterfaceAddrs(name)
 	}
+	return interfaceAddrs(name)
 }
 
 func (d *Daemon) imds(ctx context.Context) (*azure.InstanceMetadata, error) {
@@ -784,6 +841,22 @@ func (d *Daemon) ensureDNS(p *ir.Policy) {
 			ups = append(ups, a.String())
 		}
 	}
+	// Platform generic has no Azure DNS: default to the host's resolvers
+	// (read again whenever the policy is applied) and never fall back to
+	// 168.63.129.16.
+	noDefault := false
+	if len(ups) == 0 && d.cfg.IsGeneric() {
+		noDefault = true
+		if d.deps.HostResolvers != nil {
+			ups = d.deps.HostResolvers()
+		} else {
+			ups = dnsproxy.HostResolvers()
+		}
+		if len(ups) == 0 {
+			d.log.Error("platform generic: no upstream DNS server found in /etc/resolv.conf or /run/systemd/resolve/resolv.conf " +
+				"(loopback entries are ignored); set dns.upstreams or policy dnsSettings.servers")
+		}
+	}
 	listen := dnsListen(d.effCfg(), d.vpnUp)
 	key := fmt.Sprintf("%t|%s|%s", enabled, strings.Join(ups, ","), strings.Join(listen, ","))
 	if d.dns.Load() != nil && key == d.dnsKey {
@@ -795,7 +868,7 @@ func (d *Daemon) ensureDNS(p *ir.Policy) {
 	}
 	mk := func(serve bool) *dnsproxy.Proxy {
 		px := dnsproxy.New(dnsproxy.Config{
-			Listen: listen, Upstreams: slices.Clone(ups), MinSetTTL: d.cfg.DNS.MinSetTTL,
+			Listen: listen, Upstreams: slices.Clone(ups), NoDefaultUpstream: noDefault, MinSetTTL: d.cfg.DNS.MinSetTTL,
 			MaxCacheTTL: d.cfg.DNS.MaxCacheTTL, MaxCacheEntries: d.cfg.DNS.MaxCacheEntries,
 			RefreshInterval: d.cfg.DNS.RefreshInterval, Enabled: serve,
 		}, d.sw, d.log, d.onQuery)

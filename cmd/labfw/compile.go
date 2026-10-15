@@ -35,7 +35,7 @@ func (pf *policyFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&pf.config, "config", "", "config file (optional; defaults per PLAN §7.1)")
 	fs.StringVar(&pf.policy, "policy", "", "policy bundle file (file-source format); overrides the config policy source")
 	fs.StringVar(&pf.leaf, "leaf", "", "leaf policy resource ID (default: config policy.resourceId or the bundle's only leaf policy)")
-	fs.StringVar(&pf.localIP, "local-ip", "10.0.0.4", "VM private IP(s), comma-separated, primary first (used when the config has no network.localIPs)")
+	fs.StringVar(&pf.localIP, "local-ip", "10.0.0.4", "VM private IP(s), comma-separated, primary first (used when the config has no network.localIPs); the first one also stands for dnatAddressMap \"interface\"")
 	fs.BoolVar(&pf.strict, "strict", false, "treat warnings as errors (in addition to config unsupported.strict)")
 	fs.BoolVar(&pf.allowSkipDeny, "allow-skipping-deny-rules", false, "skip unsupported deny rules instead of failing (in addition to config)")
 }
@@ -115,8 +115,14 @@ func (pf *policyFlags) load() (*ir.Policy, []ir.Diagnostic, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// Offline there is no interface to read: dnatAddressMap "interface"
+	// (platform generic uplink address) maps to the first local IP.
+	var uplink netip.Addr
+	if len(local) > 0 {
+		uplink = local[0]
+	}
 	opts := resolve.Options{
-		DNATAddressMap: cfg.Network.DNATAddressMap,
+		DNATAddressMap: cfg.EffectiveDNATAddressMap(uplink),
 		LocalIPs:       local,
 		TagExpander:    tags,
 		Unsupported: resolve.Unsupported{

@@ -106,7 +106,7 @@ Key design principles:
 | Concern | Choice |
 |---|---|
 | Language | Go (≥ 1.23), stdlib `log/slog`, `net/http` |
-| Azure auth | `github.com/Azure/azure-sdk-for-go/sdk/azidentity` (ManagedIdentityCredential on VM, AzureCLICredential for dev; use `DefaultAzureCredential`-like chain) |
+| Azure auth | `github.com/Azure/azure-sdk-for-go/sdk/azidentity` (ManagedIdentityCredential on VM, AzureCLICredential for dev; use `DefaultAzureCredential`-like chain; outside Azure `azure.auth` arc / clientCertificate / clientSecret, §8.8) |
 | ARM calls | Plain `net/http` + own minimal JSON structs (not `armnetwork`), so the same structs parse exported ARM JSON files and unknown fields can be detected |
 | Firewall | nftables. Full ruleset loaded as text via `nft -f -` (exec). Dynamic set element updates via `github.com/google/nftables` netlink |
 | Logging from kernel | `log group N prefix "<ruleId>"` → NFLOG → `github.com/florianl/go-nflog/v2` |
@@ -141,7 +141,9 @@ internal/logging/                 # AZFW* schemas, NFLOG reader, writers (§6.5)
 internal/daemon/                  # orchestration: refresh loop, reload, health endpoint, signals
 internal/vpn/                     # WireGuard site-to-client VPN: keys, peer diff, netlink/wgctrl backend, client configs (§6.8)
 deploy/bicep/                     # main.bicep + modules (§8)
-deploy/cloud-init/                # cloud-init template
+deploy/cloud-init/                # cloud-init template + install-labfw.sh (Azure and generic, §8.3, §8.8)
+deploy/hyperv/                    # New-LabfwVM.ps1: labfw VM on Hyper-V (hybrid, §8.8)
+deploy/generic/                   # README: labfw on any Linux host (hybrid, §8.8)
 packaging/systemd/labfw.service
 packaging/sysctl/99-labfw.conf
 scripts/export-policy.sh          # `az rest` export of a policy into file-source format
@@ -534,10 +536,12 @@ adds no semantics:
 
 - Token: `ManagedIdentityCredential` (scope `https://management.azure.com/.default`);
   dev fallback: Azure CLI credential. Optional `azure.clientId` for a
-  user-assigned identity.
+  user-assigned identity. `azure.auth` selects Arc, a service principal
+  (certificate or secret file) or Azure CLI explicitly (§8.8).
 - VM metadata from IMDS `http://169.254.169.254/metadata/instance?api-version=2021-02-01`
   (header `Metadata: true`): location (for service tags), subscription,
-  private IPs (for `primary` mapping / auto-detect).
+  private IPs (for `primary` mapping / auto-detect). `platform: generic`
+  never calls IMDS (§8.8).
 - Refresh loop: every `policy.refreshInterval` (default 2m, jitter ±10%)
   fetch policy chain + RCGs + referenced IP groups. Service tags refreshed
   every 24h (they change weekly). Compute `SourceHash` over canonical JSON;
@@ -664,7 +668,8 @@ Rules for the renderer:
 
 - Listens on UDP+TCP 53 on the VM private IP(s) **only if**
   `dnsSettings.enableProxy` is true (or `dns.forceEnable` in config).
-- Forwards to `dnsSettings.servers` or, if empty, Azure DNS `168.63.129.16`.
+- Forwards to `dnsSettings.servers` or, if empty, Azure DNS `168.63.129.16`
+  (`platform: generic`: the host's resolvers, never Azure DNS, §8.8).
   Small in-memory cache honouring TTLs (cap at `dns.maxCacheTTL`, default 300s).
 - **Snooping:** for every A answer whose QNAME (or CNAME chain target) equals
   an FQDN referenced by a network rule (or a DNAT `translatedFqdn`), add each
@@ -902,6 +907,7 @@ snat=no (destination in private ranges)
 ### 7.1 Config file (`/etc/labfw/config.yaml`)
 
 ```yaml
+platform: azure                  # azure | generic (outside Azure: no IMDS, host DNS, §8.8)
 policy:
   source: arm                    # arm | file
   resourceId: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Network/firewallPolicies/<name>
@@ -909,17 +915,25 @@ policy:
   apiVersion: "2024-05-01"
   refreshInterval: 2m
 azure:
-  clientId: ""                   # user-assigned MI; empty = system-assigned
+  auth: auto                     # auto | managedIdentity | arc | clientCertificate | clientSecret | azureCLI (§8.8)
+  clientId: ""                   # user-assigned MI (auto, managedIdentity; empty = system-assigned) or app ID (service principal)
+  tenantId: ""                   # service principal modes
+  certificateFile: ""            # clientCertificate: PEM (cert + key) or PFX; no access for other users
+  certificatePasswordFile: ""    # optional PFX password
+  clientSecretFile: ""           # clientSecret (an inline clientSecret key is rejected)
+  location: ""                   # service tag region; empty = IMDS (azure), then the policy's location
 network:
-  interface: eth0
-  dnatAddressMap: { "*": primary }
+  interface: eth0                # the NIC (one-armed) or the WAN uplink (two-armed)
+  internalInterfaces: []         # LAN NICs of a two-armed firewall; [] = one-armed (§8.8)
+  uplinkSNAT: true               # two-armed: masquerade allowed traffic leaving the uplink
+  dnatAddressMap: { "*": primary }   # values: IPv4 | primary (azure only) | interface; generic default { "*": interface }
   managementSources: [ "203.0.113.10/32" ]
   dnsClients: [ "10.0.0.0/8" ]   # who may use the DNS proxy
-  localIPs: []                   # VM private IPs, primary first; empty = IMDS, then interface addresses
+  localIPs: []                   # VM private IPs, primary first; empty = IMDS (azure), then interface addresses
 dns:
   forceEnable: false
   listen: ":53"
-  upstreams: []                  # overrides policy dnsSettings.servers / Azure DNS (tests)
+  upstreams: []                  # overrides policy dnsSettings.servers / Azure DNS (generic: the host's resolvers)
   minSetTTL: 60s
   maxCacheTTL: 300s
   maxCacheEntries: 4096
@@ -1120,6 +1134,140 @@ private-key-looking keys are refused) adds/removes/lists runtime peers with
 `labfw vpn peer`, reloads labfw and puts the client config into the job
 summary; `vpn-peer-test.sh` tests it offline with a fake `az`.
 
+### 8.8 Hybrid deployment: policy in Azure, firewall anywhere (W13)
+
+The Firewall Policy stays in Azure (portal, Bicep, Terraform); labfw runs
+outside Azure — a VM on a laptop's Hyper-V, KVM/libvirt, Proxmox, VMware or
+bare metal — and reads the policy over HTTPS from ARM like in Azure. Only the
+control plane is in Azure: outbound 443 to `management.azure.com`,
+`login.microsoftonline.com` (and `vault.azure.net` for a Key Vault TLS CA,
+`endpoints.office.com` for Office 365 FQDN tags, GitHub releases for the
+install). No semantics change (§5 applies unchanged); what changes is how
+labfw learns host facts and authenticates.
+
+**`platform: generic`** (top level; default `azure`, so existing configs keep
+their behaviour):
+
+- No IMDS call at all. Local IPs: `network.localIPs`, else the IPv4 addresses
+  of `network.interface`, re-read on every refresh (DHCP uplink; a change
+  recompiles). Service tag region: `azure.location`, else the leaf policy's
+  location (on `azure`: `azure.location`, else IMDS, else the policy).
+- `network.dnatAddressMap` values: an IPv4 address or `interface` (first IPv4
+  address of `network.interface`, followed across address changes; offline
+  `compile`/`explain` use the first `--local-ip`). `primary` (IMDS / localIPs,
+  S22) is rejected on `generic`, whose default map is `{"*": interface}`.
+  `interface` is also accepted on `azure`.
+- DNS proxy upstreams: `dns.upstreams`, else policy `dnsSettings.servers`,
+  else the host's resolvers — the nameservers of `/etc/resolv.conf`, or of
+  `/run/systemd/resolve/resolv.conf` when the former names only loopback
+  addresses (the systemd-resolved stub, a local cache or labfw itself are
+  skipped). Read when the DNS proxy is (re)built on policy apply. Never Azure
+  DNS: with no usable server the proxy has no upstream (SERVFAIL) and logs an
+  error. `/status.dns.upstreams` shows the list.
+- nftables: no `ip saddr 168.63.129.16 accept` (Azure wire server); DHCP
+  client replies (`udp sport 67 udp dport 68`) are accepted on input instead.
+
+**`azure.auth`** (§6.1): `auto` (default) = managed identity then Azure CLI on
+`azure` (as before); on `generic` = the Azure Arc identity when the agent is
+present, then Azure CLI (never IMDS). Explicit modes:
+
+| Mode | Settings | Notes |
+|---|---|---|
+| `managedIdentity` | `clientId` (optional, user-assigned) | `azure` only |
+| `arc` | — | System-assigned identity of an Arc-enabled server. azidentity selects Arc from `IDENTITY_ENDPOINT`/`IMDS_ENDPOINT` (azcmagent sets them as systemd `DefaultEnvironment`) or from `/opt/azcmagent/bin/himds`; labfw sets the variables to the agent's endpoint `http://localhost:40342` when missing. The token flow reads a challenge file under `/var/opt/azcmagent/tokens` (group `himds`): `install-labfw.sh` adds `labfw` to `himds` when the group exists; systemd applies the user's supplementary groups and `ProtectSystem=strict` leaves `/var` readable, so the unit is unchanged. `clientId` is rejected (Arc has no user-assigned identities). |
+| `clientCertificate` | `tenantId`, `clientId`, `certificateFile` (PEM with certificate + unencrypted key, or PFX), `certificatePasswordFile` | Preferred without Arc. PFX with SHA-256 MACs is read with go-pkcs12 when azidentity's parser cannot. |
+| `clientSecret` | `tenantId`, `clientId`, `clientSecretFile` | An inline `clientSecret` key is rejected with an error that does not echo it. |
+| `azureCLI` | — | Developer machines (`az login`). |
+
+Credential files are read once when the credential is built: other users
+must have no access (any `o` bit → refused), group access is a warning
+(`0640 root:labfw` works, `0600 labfw` is preferred), max 1 MiB, regular
+files only; content is never logged. Token caching is unchanged
+(`tokenCache`). The same credential serves Key Vault. Sovereign clouds are
+out of scope (public ARM and token endpoints).
+
+**Two-armed network** (`network.internalInterfaces`, default `[]` =
+one-armed as in Azure): `network.interface` is the WAN uplink, the internal
+interfaces are LANs whose clients use labfw as default gateway and DNS
+server. Data plane additions (rendered only with internal interfaces;
+golden `two-armed.nft`, `two-armed-vpn.nft`):
+
+- `pre_nat`, after the DNAT stage and the local-traffic return:
+  `iifname <uplink> ct mark set 0x2 [log n-default] accept` — new
+  connections from the uplink are forwarded only when DNATed, like traffic
+  reaching Azure Firewall's public IP, even if a network rule would allow
+  them (`labfw explain` evaluates the policy only and still says Allow).
+- `in_filter`: the DNS proxy and CA download accept only on internal and VPN
+  interfaces (`iifname { "eth1", "wg0" } ip saddr @dns_clients …`); SSH
+  stays `managementSources` on any interface.
+- `post_nat`: `network.uplinkSNAT` (default true) adds `ct mark 0x1 oifname
+  <uplink> masquerade`: allowed traffic leaving the uplink always appears
+  from the uplink address, also toward private WAN-side destinations (the
+  Hyper-V Default Switch network, a home LAN) that have no route back to the
+  LAN. Like `vpn.snatToPrivate` it changes only what the destination sees
+  (S19 decides for the policy; `explain` may say `snat=no`).
+- The flowtable spans the uplink and all internal interfaces (probed
+  together; without kernel support the ruleset is rendered without it);
+  sysctls cover every interface.
+- The WireGuard listen port stays on the uplink; tunnel traffic arrives on
+  `wg0`, not the uplink, and is classified as before (S31).
+
+`/status` gains `platform`, `network {uplink, internalInterfaces, localIPs}`
+and `dns.upstreams`.
+
+**Deployment artifacts**:
+
+- `deploy/hyperv/New-LabfwVM.ps1` (PowerShell 5.1+, Hyper-V module): Gen2 VM
+  (default 1 vCPU, 1 GiB static memory, Secure Boot template
+  `MicrosoftUEFICertificateAuthority`), WAN on `-WanSwitch` (default
+  `Default Switch`), LAN switch created (Internal or Private) when missing,
+  static MACs (`00:15:5D` + hash of the VM name). Disk: the official
+  `ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz` (the only official
+  Ubuntu cloud image in a format Hyper-V reads; GPT with an EFI system
+  partition, boots on Gen2), checked against `SHA256SUMS` (GPG signature with
+  `-VerifySignature` and `gpg.exe`), extracted with Windows' `tar.exe`,
+  `Convert-VHD` to a cached dynamic VHDX, copied per VM. Seed: a 64 MiB FAT32
+  VHDX labelled `CIDATA` built with `New-VHD`/`Initialize-Disk`/
+  `New-Partition`/`Format-Volume` holding `user-data` (=
+  `deploy/cloud-init/cloud-init.yaml` with the placeholders main.bicep
+  renders, plus credential `write_files` entries, `bootcmd` and
+  `/etc/cloud/cloud.cfg.d/99-labfw-nocloud.cfg`), `meta-data` and
+  `network-config` (WAN DHCP, LAN static, matched by MAC, `set-name`
+  eth0/eth1, IDs sorting before the image's `90-hotplug-azure.yaml`). The
+  image's cloud-init is limited to `datasource_list: [ Azure ]`
+  (`90_dpkg.cfg`), which only the kernel command line overrides, so the script
+  rewrites the GRUB stub on the image's EFI partition (FAT32, the original
+  kept as `grub.cfg.labfw-orig`) to boot once with `ds=nocloud`; `bootcmd`
+  restores it and `99-labfw-nocloud.cfg` keeps NoCloud for later boots (the
+  seed disk stays attached). `-WhatIf`, `-Replace`, `-NoStart`; idempotent
+  image cache and switch creation; `-RenderOnly` writes the seed files only
+  (offline test `New-LabfwVM.Tests.ps1`).
+- `install-labfw.sh <tag> <arch> <repo> [azure|generic]`: platform from the
+  4th argument, `LABFW_PLATFORM`, or `platform:` in the config (YAML or
+  JSON), default `azure`. `generic` keeps the host's DNS servers for labfw's
+  own resolution (only `DNSStubListener=no`), replaces the `eth0`
+  send_redirects sysctl by one line per present NIC, disables walinuxagent
+  and removes `90-hotplug-azure.yaml`. All platforms: `labfw` joins `himds`
+  if it exists; `/etc/labfw/credentials/*` → `0600 labfw`; `LABFW_TRIM=0`
+  skips the small-VM trimming. The 3-argument Azure call (deploy/bicep,
+  vendored by onek8s/azure-landing-zone) produces the same files and commands
+  as before (`deploy/scripts/install-labfw-test.sh`).
+- `deploy/scripts/hybrid-identity.sh`: service principal with a certificate
+  (`create-for-rbac --create-cert` without role assignment; existing app:
+  appended certificate) or an Arc machine's principal; Reader on each
+  resource group of the policy chain and its IP groups (walked over ARM),
+  custom role `labfw Service Tag Reader`
+  (`Microsoft.Network/locations/serviceTags/read`) on the policy's
+  subscription (created if missing), Key Vault Secrets User on the TLS CA's
+  vault; `--dry-run`; prints the `azure:` block. Offline test with a fake
+  `az`.
+- `deploy/generic/README.md`: any Linux host, two-armed config and cloud-init
+  example.
+
+Not applicable outside Azure: UDRs, NSGs, VNet DNS, the Azure public IP in
+front of DNAT (map DNAT addresses to `interface`, forward ports on the host
+for NAT switches), `labfw nsg-rules` and the Azure workflows.
+
 ---
 
 ## 9. Testing
@@ -1211,6 +1359,7 @@ the test VM's AZFW* log lines (README "End-to-end check").
 | A27 | `fqdnTags: [LabTag]` from `fqdnTags.extra` | expands, allows listed host, denies others (S14b) |
 | A28 | Network rule FQDN whose answer is a CNAME chain | final A records allowed (S14a) |
 | A29 | Load test on B1ls-equivalent cgroup (1 CPU, 512 MiB): 200 passthrough + 50 inspected connections for 60 s | daemon RSS < 100 MiB, no OOM, no denied-by-limit logs (§12) |
+| A31 | Two-armed `platform: generic` (separate namespaces wan 172.20.16.1 + 198.51.100.10, fw uplink eth0 172.20.16.5, LAN eth1 192.168.250.1, lan 192.168.250.10; fixture `two-armed`; §8.8) | LAN → public: SNAT to the uplink (S19); LAN → private WAN address: SNAT by `uplinkSNAT`; default deny; WAN → uplink:3389 DNAT to the LAN host (S21); routed WAN → LAN dropped although a network rule allows it; DNS proxy answers on the LAN address, not on the uplink (even for a `dnsClients` source); HTTP app rule for a LAN client (S20); WireGuard client on the WAN side reaches the LAN through the tunnel without SNAT; no Azure wire-server rule |
 | A30 | WireGuard client (ns `vpnc`, tunnel 172.30.0.10, pool 172.30.0.0/24 outside `dnsClients`), peer added with `labfw vpn peer add` + SIGHUP, client configured from `labfw vpn client-config` | DNS via the gateway; allow + SNAT to inet, allow without SNAT to client2, default deny logged with `SourceIp` 172.30.0.10, app rule over the tunnel, other.test reset (S31, matches `explain`); gateway SSH/health/proxy port dropped, CA download allowed, nothing but the UDP port open outside the tunnel; adding a peer keeps the established tunnel flow and handshake; `enabled: false` + SIGHUP removes `wg0` and the rules. Kernel WireGuard, else a wireguard-go device adopted by labfw |
 
 ---
@@ -1238,6 +1387,7 @@ or more PRs; every PR must include tests and keep `go test ./...` green.
 | W10 | Deployment | W8 | `deploy/bicep`, `deploy/cloud-init`, `packaging/*`, GoReleaser (or Makefile) release with checksums, `labfw nsg-rules`, README quick start |
 | W11 | Azure E2E | W10 | `test/e2e` + manual workflow §9.3 |
 | W12 | WireGuard VPN | W8, W10 | `internal/vpn` + daemon integration §6.8 (reloadable `vpn` section, peer diffing, `/status`/metrics), nft additions with golden `vpn.nft`, `labfw vpn …` CLI, S31 (§5.9), A30, Bicep `vpn*` params/NSG/outputs §8.7, `vpn-peer.yml` + offline test, README "VPN (WireGuard)" |
+| W13 | Hybrid: policy in Azure, firewall anywhere | W10, W12 | §8.8: `platform` (azure\|generic: no IMDS, host resolvers, no wire-server rule, dnatAddressMap `interface`), `azure.auth` (auto, managedIdentity, arc, clientCertificate, clientSecret, azureCLI; credential file checks), two-armed `network.internalInterfaces` + `uplinkSNAT` with goldens `two-armed*.nft`, A31 (netns, incl. VPN on the uplink), `/status` platform/network/DNS upstreams, platform-aware `install-labfw.sh` (+ `install-labfw-test.sh`, 3-argument Azure call unchanged), `deploy/hyperv/New-LabfwVM.ps1` (+ `New-LabfwVM.Tests.ps1`), `deploy/generic/README.md`, `deploy/scripts/hybrid-identity.sh` (+ fake-az test), README "Hybrid" |
 
 Interface contracts to agree in W0 (so W2–W6 can proceed independently):
 
@@ -1305,7 +1455,9 @@ type Sink interface { Network(NetworkRecord); Nat(NatRecord); App(AppRecord); DN
 4. Log Analytics ingestion (DCR + Logs Ingestion API).
 5. HTTP/2 inside TLS inspection (currently forced to HTTP/1.1 via ALPN).
 6. Web categories via a user-supplied category→pattern map.
-7. Two-NIC mode (separate untrusted/trusted subnets).
+7. ~~Two-NIC mode (separate untrusted/trusted subnets).~~ Done in W13 for
+   hosts outside Azure (`network.internalInterfaces`, §8.8); in Azure labfw
+   stays one-armed.
 8. Auto-generated NSG rules applied by the daemon (requires Network Contributor — opt-in).
 
 ---

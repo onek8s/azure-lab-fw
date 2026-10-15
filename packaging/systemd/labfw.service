@@ -14,6 +14,21 @@
 # write /proc/sys (not root, ProtectKernelTunables), so the deployed config
 # sets `dataplane.skipSysctl: true`. Without it the daemon's ApplySysctls is
 # best-effort: write failures are reported as a warning, never fatal.
+#
+# Outside Azure (platform generic, docs/PLAN.md §8.8) the unit is unchanged:
+#   azure.auth arc               the Arc agent's identity endpoint is
+#                                http://localhost:40342 (labfw sets
+#                                IDENTITY_ENDPOINT/IMDS_ENDPOINT itself when
+#                                azcmagent's systemd DefaultEnvironment is
+#                                missing); its challenge file under
+#                                /var/opt/azcmagent/tokens is read through the
+#                                himds group, a supplementary group of the
+#                                labfw user (install-labfw.sh adds it; systemd
+#                                applies the user's groups) - ProtectSystem
+#                                leaves /var readable.
+#   azure.auth clientCertificate credential files under /etc/labfw/credentials
+#   / clientSecret               (0600, owner labfw; readable under
+#                                ProtectSystem=strict).
 [Unit]
 Description=labfw Azure Firewall emulation
 Documentation=https://github.com/onek8s/azure-lab-fw

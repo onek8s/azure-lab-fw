@@ -104,7 +104,8 @@ func (d *Daemon) writeLKG(p *ir.Policy) error {
 }
 
 // detectLocalIPs returns the VM private IPs: config network.localIPs, else
-// IMDS private IPs, else the IPv4 addresses of network.interface.
+// IMDS private IPs (platform azure only), else the IPv4 addresses of
+// network.interface.
 func (d *Daemon) detectLocalIPs(ctx context.Context) []netip.Addr {
 	var out []netip.Addr
 	for _, s := range d.cfg.Network.LocalIPs {
@@ -115,7 +116,7 @@ func (d *Daemon) detectLocalIPs(ctx context.Context) []netip.Addr {
 	if len(out) > 0 {
 		return out
 	}
-	if d.azure != nil {
+	if d.azure != nil && !d.cfg.IsGeneric() {
 		if md, err := d.imds(ctx); err == nil {
 			for _, a := range md.PrivateIPs() {
 				if a.Unmap().Is4() {
@@ -129,7 +130,7 @@ func (d *Daemon) detectLocalIPs(ctx context.Context) []netip.Addr {
 			d.log.Debug("IMDS not available for local IPs", "err", err)
 		}
 	}
-	return interfaceAddrs(d.cfg.Network.Interface)
+	return d.ifaceAddrs(d.cfg.Network.Interface)
 }
 
 func interfaceAddrs(name string) []netip.Addr {

@@ -40,6 +40,20 @@ func inNetns(t *testing.T, fn func() error) {
 	}
 }
 
+func TestSysctlsTwoArmed(t *testing.T) {
+	cfg := config.Default()
+	cfg.Network.InternalInterfaces = []string{"eth1", "eth2"}
+	keys := map[string]bool{}
+	for _, s := range Sysctls(&cfg) {
+		keys[s.Key()] = true
+	}
+	for _, k := range []string{"net.ipv4.conf.eth0.send_redirects", "net.ipv4.conf.eth1.send_redirects", "net.ipv4.conf.eth2.send_redirects"} {
+		if !keys[k] {
+			t.Errorf("missing %s", k)
+		}
+	}
+}
+
 func TestSysctls(t *testing.T) {
 	cfg := config.Default()
 	cfg.Network.Interface = "eth0.100"

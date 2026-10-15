@@ -3,7 +3,9 @@
 `labfw` emulates Azure Firewall for long-running labs at a fraction of the
 cost. It reads an existing **Azure Firewall Policy** (rule collection groups,
 base policies, IP groups, service tags) from the Azure Resource Manager API
-using the VM's managed identity, and enforces the same DNAT, network and
+using the VM's managed identity (or, outside Azure, an Arc identity or a
+service principal — see [Hybrid](#hybrid-policy-in-azure-firewall-on-hyper-v-or-any-linux)),
+and enforces the same DNAT, network and
 application rules — including FQDN tags, URL filtering and TLS inspection —
 on a minimal Linux VM (`Standard_B1ls`, 512 MiB) with nftables, a DNS proxy
 and a transparent HTTP/TLS proxy. The policy stays the source of truth, so
@@ -394,6 +396,121 @@ Status and metrics: `/status` (`vpn`), `labfw_vpn_*` in `/metrics`.
 there; tunnel traffic is normal VM bandwidth (Internet egress is billed as
 usual). A real Azure Firewall has no client VPN — the production equivalent
 is a VPN Gateway point-to-site configuration.
+
+### Hybrid: policy in Azure, firewall on Hyper-V or any Linux
+
+labfw does not have to run in Azure. With `platform: generic` it runs as a VM
+on a laptop's Hyper-V (or KVM, Proxmox, VMware, bare metal) while the
+Firewall Policy stays in the Azure portal: labfw reads it over HTTPS from ARM
+exactly as in Azure and enforces it locally ([PLAN §8.8](docs/PLAN.md)).
+
+```
+ Azure (control plane only)                     laptop / lab host
+ ┌──────────────────────────────┐   HTTPS 443   ┌──────────────── labfw VM ────────────────┐
+ │ Firewall Policy, base policy,│◀──────────────┤ eth0 WAN (DHCP, "Default Switch")        │──▶ Internet
+ │ IP groups, service tags (ARM)│  Entra ID     │ eth1 LAN 192.168.250.1/24 (gateway + DNS)│
+ │ Key Vault CA (optional)      │  token        └───────────────┬──────────────────────────┘
+ └──────────────────────────────┘                    LAN clients 192.168.250.0/24
+```
+
+Outbound from the VM: 443 to `management.azure.com` and
+`login.microsoftonline.com` (plus `vault.azure.net` for a Key Vault TLS CA,
+`endpoints.office.com` for Office 365 FQDN tags), and GitHub releases
+(`github.com`, `objects.githubusercontent.com`) for the install. Nothing
+inbound from Azure.
+
+**What `platform: generic` changes** (Azure configs are unaffected; the
+default stays `azure`): no IMDS calls at all (local IPs from
+`network.localIPs` or the uplink interface; service tag region from
+`azure.location`, else the policy's location); DNS proxy upstreams default to
+the host's resolvers (`/etc/resolv.conf`, then systemd-resolved's real
+servers; loopback entries skipped; `dns.upstreams` or the policy's
+`dnsSettings.servers` still win) and never Azure DNS; no rule for the Azure
+wire server 168.63.129.16; `dnatAddressMap` values are explicit IPs or
+`interface` (first IPv4 of the uplink, followed across DHCP changes) —
+`primary` needs IMDS and is rejected.
+
+**Two-armed** (`network.internalInterfaces: [eth1]`; default `[]` =
+one-armed as in Azure): LAN clients use labfw as default gateway and DNS
+server; forwarded traffic from the LAN is evaluated by the policy; allowed
+traffic leaving the uplink is masqueraded (`network.uplinkSNAT`, default
+true — also toward private WAN-side addresses, which have no route back to
+the LAN); new connections arriving on the uplink reach the LAN **only through
+DNAT rules** (like Azure Firewall's public IP), even when a network rule would
+allow them; the DNS proxy and the CA download answer only on the internal
+(and VPN) interfaces. The WireGuard VPN keeps its listen port on the uplink.
+
+**Identity options** (`azure.auth`):
+
+| Mode | Secret on the machine | Notes |
+|---|---|---|
+| `arc` — Azure Arc-enabled server | none | **Preferred.** Connect the VM with `azcmagent`; labfw uses its system-assigned identity via the agent at `localhost:40342`. The install script adds the `labfw` user to `himds` (the token challenge file). |
+| `clientCertificate` — service principal | certificate + key (PEM, or PFX + `certificatePasswordFile`) | Preferred without Arc; the key can be rotated with `hybrid-identity.sh` (it appends a certificate). |
+| `clientSecret` — service principal | secret in `clientSecretFile` | Last resort; inline `clientSecret` is rejected. |
+| `azureCLI` | your `az login` | Developer machines. |
+| `managedIdentity` / `auto` | — | Azure VMs (`auto` on `generic` = Arc if present, then Azure CLI; never IMDS). |
+
+Credential files that other users can read are refused (keep them `0600`,
+owner `labfw`, under `/etc/labfw/credentials/`); secrets are never logged.
+[`deploy/scripts/hybrid-identity.sh`](deploy/scripts/hybrid-identity.sh)
+creates the service principal (or takes the Arc machine's principal) and
+assigns least privilege: **Reader** on every resource group of the policy,
+its base policies and IP groups, the custom role **labfw Service Tag Reader**
+(`Microsoft.Network/locations/serviceTags/read`, created if missing) on the
+subscription, and **Key Vault Secrets User** on the TLS CA's vault; it prints
+the `azure:` block (`--dry-run` first). Sovereign clouds are not supported
+(ARM and token endpoints are the public cloud's).
+
+**Hyper-V quick start** (elevated Windows PowerShell 5.1 or 7, Hyper-V
+enabled, from a checkout of this repository):
+
+```powershell
+# 1. identity (bash with az, e.g. WSL or Cloud Shell)
+#    deploy/scripts/hybrid-identity.sh --policy-id <policy ID> --sp-name labfw-laptop --out-dir .
+# 2. VM: 1 vCPU, 1 GiB, WAN = Default Switch, LAN = new Internal switch labfw-lan
+.\deploy\hyperv\New-LabfwVM.ps1 -ReleaseTag v0.5.0 -PolicyResourceId <policy ID> `
+    -Auth clientCertificate -TenantId <tenant> -ClientId <appId> -CredentialFile .\azure-sp.pem `
+    -Location swedencentral -LanAddress 192.168.250.1/24 -LanHostAddress 192.168.250.2/24
+```
+
+[`New-LabfwVM.ps1`](deploy/hyperv/New-LabfwVM.ps1) downloads the official
+Ubuntu 24.04 image for Azure/Hyper-V, verifies it against `SHA256SUMS`
+(`-VerifySignature` also checks the GPG signature when `gpg.exe` is
+available), converts it to VHDX, creates the LAN switch if missing, builds a
+cloud-init NoCloud seed disk (FAT32, label `CIDATA`) with the same cloud-init
+template and install script as the Azure deployment, and starts a Generation
+2 VM with Secure Boot. That image only reads its Azure datasource, so the
+script makes the first boot pass `ds=nocloud` through the GRUB stub on the
+EFI partition (restored by cloud-init during that boot). `-WhatIf` shows the
+steps, `-VpnEnabled` adds the WireGuard VPN, `-Auth arc` skips credentials
+(connect the VM with `azcmagent` afterwards). Other hypervisors and bare
+metal: [`deploy/generic/README.md`](deploy/generic/README.md).
+
+**Clients**: attach them to the LAN switch with a static address in the LAN
+prefix, gateway **and** DNS server = labfw's LAN address (labfw runs no DHCP
+server). Install the lab CA (`http://192.168.250.1:9091/ca.crt`) for TLS
+inspection. With `-LanHostAddress` on an Internal switch the Windows host
+itself is a LAN client (add routes through 192.168.250.1 if it should use
+labfw for more than the LAN).
+
+**What does not apply outside Azure**: UDRs, NSGs and VNet DNS settings (the
+clients' own gateway/DNS settings replace them; the policy's network rules are
+the only filter), the Azure public IP in front of DNAT rules — map the policy's
+DNAT addresses to `interface` and, on the Hyper-V Default Switch (NAT, reachable
+only from the host), forward ports on the host
+(`netsh interface portproxy` or an External switch) — and `labfw nsg-rules`.
+The GitHub workflows (deploy-lab, wire-spokes, view-logs, vpn-peer) target the
+Azure VM; run the equivalent `labfw` commands on the VM instead.
+
+**Troubleshooting** (on the VM):
+
+```sh
+labfw fetch --config /etc/labfw/config.yaml --out /tmp/policy.json    # identity + RBAC: 401/403 name the missing role
+curl -s 127.0.0.1:9090/status | jq '{health, platform, network, dns: .dns.upstreams, lastError}'
+journalctl -u labfw -n 50        # "credential file ... lets other users access it", "no Azure Arc agent found", ...
+labfw logs --action deny -n 50   # what the policy dropped
+cloud-init status --long         # first boot (Hyper-V seed, install-labfw.sh output in /var/log/cloud-init-output.log)
+```
 
 ### Switching to a real Azure Firewall
 

@@ -25,6 +25,7 @@ from now on. Keep `acceptance/policy-a18.json` identical to
 | `unsupported` | Premium policy using everything in §5.6 on **allow** rules only, so it compiles with warnings: `threatIntelMode: Deny` (+ whitelist), `intrusionDetection` (mode Deny), `explicitProxy`, `sql`, `insights`, `snat.autoLearnPrivateRanges: Enabled` and `privateRanges: ["IANAPrivateRanges"]`, an IPv6 DNS server, IPv6 entries in a network rule (`ipv6-mixed` keeps its IPv4 part, `ipv6-only` matches nothing), wildcard network FQDN (S14a), `webCategories`, `Mssql`, `httpHeadersToInsert`, invalid FQDN pattern `www.*.test` (S11), `targetUrls` with a path on Https without `terminateTLS` (S27), unknown `fqdnTags`. |
 | `unsupported-deny` | A **deny** rule with `webCategories`: hard compile error unless `unsupported.allowSkippingDenyRules: true` (PLAN §2 principle 4, §5.6). |
 | `acceptance` | The policy for the acceptance matrix (PLAN §9.4), see below. |
+| `two-armed` | Acceptance A31 (two-armed platform generic, PLAN §8.8; `test/netns/twoarmed_test.go`): uplink `172.20.16.5`, LAN `192.168.250.0/24`. DNAT `20.0.0.1:3389 → 192.168.250.10:3389` (config maps `20.0.0.1` to `interface`), network allows LAN → `198.51.100.10:8080` (public, S19) and → `172.20.16.1:8080` (private WAN side, `uplinkSNAT`), `172.20.16.0/24 → 192.168.250.10:8080` (allowed by the policy, dropped because the uplink forwards only DNAT), VPN pool `10.0.12.0/24 → 192.168.250.10:8080`; app rule `Http:80 allowed.test` for the LAN. `dnsSettings.enableProxy: true`, no servers. |
 
 ## Acceptance fixture (`acceptance/`)
 
