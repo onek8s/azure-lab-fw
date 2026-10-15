@@ -5,7 +5,7 @@ that reads an Azure Firewall Policy from the ARM API and enforces it on a
 minimal Linux VM (nftables + built-in DNS proxy + transparent HTTP/TLS proxy).
 
 - **Read `docs/PLAN.md` first.** It is the design, the semantics specification
-  (§5, IDs S1…S30) and the work breakdown (§10, workstreams W0…W11).
+  (§5, IDs S1…S31) and the work breakdown (§10, workstreams W0…W12).
 - Pick a workstream whose dependencies are merged; keep PRs scoped to it.
 - `internal/eval` is the single source of truth for firewall semantics. Other
   components must call it, not re-implement matching.

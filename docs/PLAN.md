@@ -139,6 +139,7 @@ internal/certs/                   # CA loading (Key Vault / local), leaf cert mi
 internal/fqdn/                    # FQDN/URL pattern matching (shared by eval, dnsproxy); FQDN tag catalogue (§5.8)
 internal/logging/                 # AZFW* schemas, NFLOG reader, writers (§6.5)
 internal/daemon/                  # orchestration: refresh loop, reload, health endpoint, signals
+internal/vpn/                     # WireGuard site-to-client VPN: keys, peer diff, netlink/wgctrl backend, client configs (§6.8)
 deploy/bicep/                     # main.bicep + modules (§8)
 deploy/cloud-init/                # cloud-init template
 packaging/systemd/labfw.service
@@ -507,6 +508,24 @@ Microsoft and not published as lists, except Office 365.
 - Diagnostics: `info` listing which tags were expanded and how many
   patterns resulted.
 
+### 5.9 VPN tunnel traffic
+
+The WireGuard VPN (§6.8) is a labfw extra (Azure Firewall has no client
+VPN; the Azure equivalent is a VPN Gateway point-to-site configuration). It
+adds no semantics:
+
+- **S31** Traffic that arrives through the tunnel is **ordinary forwarded
+  traffic**, evaluated by the same pipeline (S1–S30) with the client's tunnel
+  address as source: DNAT, network and application rules, the transparent
+  proxy, the DNS proxy and SNAT (S19: kept toward `privateRanges`,
+  masqueraded otherwise) apply unchanged, and the flows are logged like any
+  other (`SourceIp` = tunnel address). Policies select VPN clients by their
+  pool addresses like any spoke prefix; nothing is allowed implicitly. The
+  only VPN-specific data-plane additions are outside the policy: the UDP
+  listen port on the uplink, anti-spoofing for the pool, MSS clamping, and
+  the optional `vpn.snatToPrivate` masquerade (which changes only the source
+  the destination sees, not the decision).
+
 ---
 
 ## 6. Components
@@ -767,6 +786,72 @@ using the same managed identity.
   (ARM source) are downloaded at most every 24 h into
   `stateDir/servicetags.json`; only referenced tags enter the bundle.
 
+### 6.8 WireGuard site-to-client VPN (`internal/vpn`, `internal/daemon`)
+
+Lets agent and management VMs **outside Azure** reach the lab (hub +
+spokes) through labfw. Kernel WireGuard (module in the Ubuntu 24.04
+`linux-azure` kernels, loaded at boot by `packaging/modules-load/labfw.conf`),
+configured by the daemon itself — no extra service:
+
+- **Device**: `vpn.interface` (default `wg0`) is created over rtnetlink
+  (`github.com/jsimonetti/rtnetlink/v2`, on the existing
+  `mdlayher/netlink`) with alias `labfw`, gets `vpn.address` (gateway + pool
+  length; the connected route covers the pool) and is set up; keys, port and
+  peers via `golang.zx2c4.com/wireguard/wgctrl` (generic netlink). Only
+  `CAP_NET_ADMIN` is needed (the unit's ambient capability); no `ip`/`wg`
+  binaries. An existing interface of another kind is adopted only when wgctrl
+  can configure it (a userspace WireGuard, used by the netns test on kernels
+  without the module). With the VPN disabled at start, a `wireguard` link
+  with alias `labfw` left by a previous run is deleted.
+- **Keys**: the server private key is `vpn.privateKeyFile` (default
+  `stateDir/wireguard.key`), generated with mode 0600 on first start (written
+  to a temp file and hard-linked, never replaced), never logged; `/status`
+  shows only the public key. Client private keys never exist on the
+  firewall: `labfw vpn client-config` prints a placeholder.
+- **Peers**: `vpn.peers` (inline) + `vpn.peersFile` (`{"peers": [...]}`, YAML
+  or JSON), validated together: unique names and public keys, `allowedIPs`
+  inside the pool, not containing the gateway, no overlaps. The peers file is
+  re-read on every refresh and SIGHUP; the daemon diffs the device
+  (`vpn.DiffPeers`): new and changed peers are configured in place
+  (allowed IPs replaced), removed peers deleted, unchanged peers **not
+  touched**, so their sessions survive. An invalid peers file keeps the
+  device as it is (error in `/status`).
+- **Reload**: SIGHUP re-reads `config.yaml`; the `vpn` section is applied at
+  runtime (other sections still need a restart, logged as a warning).
+  `enabled: false` or a removed section deletes the interface and re-renders
+  the ruleset without the VPN bits; an interface rename removes the old one.
+- **Data plane** (§6.2 additions, rendered only with the VPN enabled): the
+  pool joins the effective `dns_clients` set (DNS proxy and CA download, same
+  as other trusted clients); `in_filter` accepts `iifname <uplink> udp dport
+  <listenPort>`; `pre_nat` exempts that port from DNAT (`udp dport <port> fib
+  daddr type local return` before stage 1); `fwd_filter` and `in_filter` drop
+  pool sources not arriving on the tunnel interface; `fwd_filter` clamps the
+  TCP MSS of SYNs leaving through the tunnel (`tcp option maxseg size set rt
+  mtu`); tunnel flows are kept off the flowtable (`iifname/oifname !=
+  wg0`); with `snatToPrivate` `post_nat` masquerades pool sources toward
+  private destinations too. Classification itself is unchanged (S31).
+- **DNS proxy**: with a wildcard `dns.listen` (default `:53`) it already
+  answers on the gateway; with a specific host the gateway address is added
+  to the listeners once the tunnel is up. `clientDNS` defaults to the gateway
+  when the DNS proxy serves.
+- **Failure handling**: a VPN error (module missing, bad peers file) is
+  logged and reported in `/status.vpn.error` and `labfw_vpn_up 0`; it never
+  degrades policy health or blocks the DNS proxy.
+- **Status**: `/status` → `vpn {enabled, interface, listenPort, address,
+  publicKey, deviceType, clientDNS, clientRoutes, snatToPrivate, lastApply,
+  error, peers[{name, publicKey, allowedIPs, endpoint, latestHandshake,
+  rxBytes, txBytes}]}`; `/metrics` → `labfw_vpn_enabled`, `labfw_vpn_up`,
+  `labfw_vpn_peers`, `labfw_vpn_peer_{receive,transmit}_bytes_total{peer,
+  public_key}`, `labfw_vpn_peer_last_handshake_timestamp_seconds`.
+- **Routing in Azure**: VPN sources are kept toward private destinations,
+  so replies must return through labfw: spokes with `0.0.0.0/0 → labfw`
+  (wire-spokes) do; elsewhere use `snatToPrivate`. The pool must be outside
+  every VNet. The NSG needs UDP `listenPort` inbound and an outbound allow for
+  the pool (not covered by `AllowVnetOutBound`).
+- **Budget**: the wgctrl client is created lazily (none while disabled) and
+  netlink sockets are opened per reconcile; the kernel holds the tunnel
+  state. No measurable RSS change (A29 still applies).
+
 ---
 
 ## 7. CLI
@@ -784,6 +869,14 @@ labfw logs     [--config …|--file azfw.jsonl] [--category network|nat|app|dns|
                [--src ip/cidr] [--dst ip/cidr] [--fqdn sub|*.domain] [--rule sub] [--since 15m|RFC3339] [--until …]
                [-n 100] [-f] [--output table|json|summary]
                # view AZFW* logs (§6.5): azfw.jsonl + rotated files oldest first; streaming, low memory
+labfw vpn keygen                                    # new client key pair (run on the client)
+labfw vpn pubkey [--config …]                       # server public key (vpn.privateKeyFile, else /status)
+labfw vpn client-config --peer <name> --endpoint <host[:port]> [--dns ip] [--private-key-placeholder]
+                                                    # wg-quick config: Address = peer allowedIPs, DNS = clientDNS,
+                                                    # PrivateKey = <client private key>, AllowedIPs = clientRoutes + gateway/32
+labfw vpn status [--json]                           # VPN part of /status (or the device via wgctrl)
+labfw vpn peer list|add|remove [--name n] [--public-key k] [--allowed-ip a/32]
+                                                    # edit vpn.peersFile (validated; add picks the next free /32), then reload
 labfw version
 ```
 
@@ -871,7 +964,23 @@ unsupported:
   allowSkippingDenyRules: false
 health:
   listen: 127.0.0.1:9090           # /healthz, /status, /metrics; "" = off
-stateDir: /var/lib/labfw           # lkg.json, ca.{crt,key}, servicetags.json, o365-endpoints.json
+vpn:                               # WireGuard site-to-client VPN (§6.8); reloadable on SIGHUP
+  enabled: false                   # default off; everything below ignored when false
+  interface: wg0
+  listenPort: 51820                # UDP, accepted on input from network.interface only
+  address: 10.0.12.1/24            # gateway address + client pool; required when enabled
+  privateKeyFile: /var/lib/labfw/wireguard.key   # default stateDir/wireguard.key; generated 0600; never logged
+  peersFile: ""                    # optional {"peers": [...]} (YAML/JSON), re-read on refresh/SIGHUP
+  peers:                           # inline peers (public keys only)
+    - name: agent-1
+      publicKey: "base64..."
+      allowedIPs: ["10.0.12.10/32"]  # inside the pool, not the gateway, no overlaps
+      presharedKeyFile: ""           # optional
+      persistentKeepalive: 0s        # optional
+  clientRoutes: []                 # AllowedIPs of generated client configs; default network.dnsClients
+  clientDNS: ""                    # default: gateway address when the DNS proxy runs
+  snatToPrivate: false             # true: masquerade VPN sources toward private destinations too
+stateDir: /var/lib/labfw           # lkg.json, ca.{crt,key}, servicetags.json, o365-endpoints.json, wireguard.key
 ```
 
 ---
@@ -950,7 +1059,7 @@ tables outside the template attach `routeTableId` (output) instead of
 `LimitNOFILE=16384`.
 
 Kernel parameters come from `packaging/sysctl/99-labfw.conf` (with
-`nf_conntrack` loaded by `packaging/modules-load/labfw.conf`) because the
+`nf_conntrack` — and `wireguard` for §6.8 — loaded by `packaging/modules-load/labfw.conf`) because the
 unprivileged unit cannot write `/proc/sys`; the deployed config sets
 `dataplane.skipSysctl: true` and the daemon treats `ApplySysctls` failures as
 best-effort warnings.
@@ -986,6 +1095,31 @@ detaches/deletes only `labfw-wiring` route tables and resets DNS only when it
 is exactly [fwIp]. `destroy-lab.yml` refuses while wiring exists and deletes
 `snet-labfw` via the tagged NSG.
 
+### 8.7 VPN deployment (§6.8)
+
+`main.bicep` parameters: `vpnEnabled` (default false), `vpnAddress`
+(`10.0.12.1/24`), `vpnListenPort` (51820), `vpnSourcePrefixes` (NSG source of
+the UDP rule, default `['Internet']`), `vpnPeers` (`{name, publicKey,
+allowedIPs}[]`), `vpnClientRoutes` (default: the `network.dnsClients`
+prefixes, i.e. `trustedPrefixes` in existing-hub mode), `vpnSnatToPrivate`.
+With `vpnEnabled` the template writes the `vpn` section (with `peersFile:
+/var/lib/labfw/vpn-peers.json`; without it the section is omitted so older
+releases still parse the config), adds NSG rules `allow-labfw-vpn-wireguard`
+(inbound UDP) and `allow-labfw-vpn-pool-outbound` (priority 300 each), adds
+the pool to the sample policy's sources and outputs `vpnEndpoint`
+(`<public IP>:<port>`) and `vpnPool`. `lab-existing-hub.bicepparam` reads
+`LABFW_VPN_ENABLED`, `LABFW_VPN_ADDRESS`, `LABFW_VPN_LISTEN_PORT`,
+`LABFW_VPN_SOURCE_PREFIXES`, `LABFW_VPN_PEERS` (JSON) and
+`LABFW_VPN_SNAT_TO_PRIVATE`; deploy-lab sets them from the `vpnEnabled`
+input and `vars.LABFW_VPN_PEERS` / `vars.LABFW_VPN_SOURCE_PREFIXES`. Azure
+rejects `customData` changes on an existing VM, so the VPN is chosen when the
+VM is created (or the section is added to `/etc/labfw/config.yaml` by hand +
+SIGHUP). `vpn-peer.yml` (`deploy/scripts/vpn-peer.sh` → `vpn-peer-vm.sh`
+through Run Command, parameters only, public keys only — clamped
+private-key-looking keys are refused) adds/removes/lists runtime peers with
+`labfw vpn peer`, reloads labfw and puts the client config into the job
+summary; `vpn-peer-test.sh` tests it offline with a fake `az`.
+
 ---
 
 ## 9. Testing
@@ -995,7 +1129,7 @@ is exactly [fwIp]. `destroy-lab.yml` refuses while wiring exists and deletes
 - `policy`: parse every fixture; unknown fields reported.
 - `resolve`: base policy ordering, IP group expansion, service tags, address
   range → prefix conversion, port parsing, diagnostics for §5.6.
-- `eval`: one test per semantic ID (S1–S30, incl. S14a/S14b/S18a), table-driven.
+- `eval`: one test per semantic ID (S1–S31, incl. S14a/S14b/S18a), table-driven.
 - `render/nft`: golden files.
 - `appproxy`: ClientHello parser (fragmented, no SNI, malformed), HTTP Host
   parsing, decision table using in-memory pipes (`net.Pipe`); TLS
@@ -1077,6 +1211,7 @@ the test VM's AZFW* log lines (README "End-to-end check").
 | A27 | `fqdnTags: [LabTag]` from `fqdnTags.extra` | expands, allows listed host, denies others (S14b) |
 | A28 | Network rule FQDN whose answer is a CNAME chain | final A records allowed (S14a) |
 | A29 | Load test on B1ls-equivalent cgroup (1 CPU, 512 MiB): 200 passthrough + 50 inspected connections for 60 s | daemon RSS < 100 MiB, no OOM, no denied-by-limit logs (§12) |
+| A30 | WireGuard client (ns `vpnc`, tunnel 172.30.0.10, pool 172.30.0.0/24 outside `dnsClients`), peer added with `labfw vpn peer add` + SIGHUP, client configured from `labfw vpn client-config` | DNS via the gateway; allow + SNAT to inet, allow without SNAT to client2, default deny logged with `SourceIp` 172.30.0.10, app rule over the tunnel, other.test reset (S31, matches `explain`); gateway SSH/health/proxy port dropped, CA download allowed, nothing but the UDP port open outside the tunnel; adding a peer keeps the established tunnel flow and handshake; `enabled: false` + SIGHUP removes `wg0` and the rules. Kernel WireGuard, else a wireguard-go device adopted by labfw |
 
 ---
 
@@ -1102,6 +1237,7 @@ or more PRs; every PR must include tests and keep `go test ./...` green.
 | W9b | Resource budget | W9 | A29 load test under `systemd-run -p MemoryMax=512M -p CPUQuota=100%`, `/metrics` RSS/goroutine gauges, CI check that fails if idle RSS > 40 MiB |
 | W10 | Deployment | W8 | `deploy/bicep`, `deploy/cloud-init`, `packaging/*`, GoReleaser (or Makefile) release with checksums, `labfw nsg-rules`, README quick start |
 | W11 | Azure E2E | W10 | `test/e2e` + manual workflow §9.3 |
+| W12 | WireGuard VPN | W8, W10 | `internal/vpn` + daemon integration §6.8 (reloadable `vpn` section, peer diffing, `/status`/metrics), nft additions with golden `vpn.nft`, `labfw vpn …` CLI, S31 (§5.9), A30, Bicep `vpn*` params/NSG/outputs §8.7, `vpn-peer.yml` + offline test, README "VPN (WireGuard)" |
 
 Interface contracts to agree in W0 (so W2–W6 can proceed independently):
 

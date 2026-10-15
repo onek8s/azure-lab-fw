@@ -270,6 +270,131 @@ same KQL concepts apply, e.g. `jq 'select(.Action=="Deny")'` over the JSON
 lines. Ingestion into Log Analytics (DCR + Logs Ingestion API) is a stretch
 goal ([PLAN §11](docs/PLAN.md), item 4).
 
+### VPN (WireGuard)
+
+CI agents/runners and management VMs **outside Azure** can reach the lab
+(hub + spokes behind labfw) through a WireGuard tunnel that labfw itself
+terminates — kernel WireGuard configured over netlink by the unprivileged
+daemon, no extra service ([PLAN §6.8](docs/PLAN.md)). The tunnel is only a
+way in: packets from it are **ordinary forwarded traffic**, evaluated by the
+same policy as traffic from a spoke (DNAT, network and application rules, the
+transparent proxy, the DNS proxy, SNAT; S31) with the client's tunnel address
+as source, and they appear in `azfw.jsonl` like any other flow.
+
+**Enable it** when the firewall VM is created: run **deploy-lab** with
+`vpnEnabled=true` (Bicep: `vpnEnabled`, `vpnAddress` default
+`10.0.12.1/24` = gateway + client pool, `vpnListenPort` default 51820,
+`vpnSourcePrefixes` default `['Internet']`, `vpnPeers`, `vpnClientRoutes`
+default `trustedPrefixes`, `vpnSnatToPrivate`; the output `vpnEndpoint` is
+`<public IP>:51820`). Peers can come from the repository variable
+`LABFW_VPN_PEERS` (`[{"name":"agent-1","publicKey":"…","allowedIPs":["10.0.12.10/32"]}]`,
+public keys only); `LABFW_VPN_SOURCE_PREFIXES` narrows the NSG rule to your
+agents' egress IPs. Azure rejects `customData` changes on an existing VM, so
+for a VM deployed without the VPN either redeploy it (**destroy-lab**, then
+**deploy-lab**) or add the section by hand and reload — labfw applies changes
+of the `vpn` section on `systemctl reload labfw` (SIGHUP) without a restart:
+
+```yaml
+# /etc/labfw/config.yaml (the deployed file is JSON; add a "vpn" key)
+vpn:
+  enabled: true
+  address: 10.0.12.1/24              # gateway on wg0 + client pool; outside every VNet
+  listenPort: 51820
+  peersFile: /var/lib/labfw/vpn-peers.json   # runtime peers (vpn-peer workflow)
+  clientRoutes: [10.0.0.0/22, 10.0.8.0/22, 10.200.0.0/22]
+  snatToPrivate: false
+```
+
+and allow UDP 51820 inbound on the labfw NSG plus outbound from the pool
+(what the template creates):
+
+```sh
+az network nsg rule create -g rg-labfw-swedencentral --nsg-name labfw-fw-nsg -n allow-labfw-vpn-wireguard \
+  --priority 300 --direction Inbound --protocol Udp --source-address-prefixes Internet --destination-port-ranges 51820
+az network nsg rule create -g rg-labfw-swedencentral --nsg-name labfw-fw-nsg -n allow-labfw-vpn-pool-outbound \
+  --priority 300 --direction Outbound --protocol '*' --source-address-prefixes 10.0.12.0/24 --destination-port-ranges '*'
+```
+
+On first start labfw generates the server key (`/var/lib/labfw/wireguard.key`,
+mode 0600, never logged) and creates `wg0`; the release's
+`/etc/modules-load.d/labfw.conf` loads the `wireguard` module at boot.
+
+**Add a peer.** Create the key pair **on the client** — the private key never
+leaves it:
+
+```sh
+wg genkey | tee labfw.key | wg pubkey      # or: labfw vpn keygen
+```
+
+then run [`vpn-peer`](.github/workflows/vpn-peer.yml)
+([`deploy/scripts/vpn-peer.sh`](deploy/scripts/vpn-peer.sh)) with
+`action=add`, `name`, `publicKey` (the **public** key; a key with the bit
+pattern of a WireGuard private key is refused) and optionally `allowedIP`
+(default: the next free address in the pool) and `endpoint` (default: the VM's
+public IP). It writes the peer to `vpn.peersFile` with `labfw vpn peer add`
+(validated: inside the pool, no overlap, unique name and key), reloads labfw
+— unchanged peers keep their sessions — and prints the client config into
+the job summary. `action=remove` deletes a peer, `action=list` shows peers
+with their latest handshake and byte counters. Inputs are validated with
+strict patterns and reach the VM only as Run Command parameters. On the VM:
+
+```sh
+sudo labfw vpn peer add --name agent-1 --public-key '<public key>' [--allowed-ip 10.0.12.10/32]
+sudo systemctl reload labfw
+labfw vpn client-config --peer agent-1 --endpoint <labfw public IP>   # wg-quick config
+labfw vpn status        # interface, port, public key, peers: handshake, rx/tx
+labfw vpn pubkey        # server public key
+```
+
+**Client setup.** The client config has `PrivateKey = <client private key>`:
+replace it with the content of `labfw.key`.
+
+- Linux: save it as `/etc/wireguard/labfw.conf` (mode 0600) and run
+  `sudo wg-quick up labfw` (`systemctl enable --now wg-quick@labfw` for agents).
+- Windows/macOS: WireGuard app → *Import tunnel(s) from file* (or *Add empty
+  tunnel* and paste), then *Activate*.
+
+`AllowedIPs` = `clientRoutes` (default `network.dnsClients`, in the lab the
+hub and spoke ranges) + the gateway /32: only lab traffic enters the tunnel,
+the client's Internet traffic does not. Do not put the labfw public IP inside
+`clientRoutes`.
+
+**Routes in the lab.** VPN client sources are kept toward private
+destinations (like Azure Firewall's no-SNAT for private ranges), so replies
+must come back through labfw: spokes wired by **wire-spokes**
+(`0.0.0.0/0 → labfw`) already do that — the pool (10.0.12.0/24) is in no VNet,
+so their default route catches it. Subnets **without** such a route (other
+hub subnets, unwired spokes, PaaS) would send the replies to the Internet:
+set `snatToPrivate: true` (bicep `vpnSnatToPrivate`) to masquerade VPN
+traffic to the labfw private IP for private destinations too (the policy
+still sees the tunnel address; logs show it, the destination sees labfw).
+Internet-bound traffic from VPN clients is always SNATed like other forwarded
+traffic. Spoke NSGs must allow the pool as a source (or use `snatToPrivate`).
+
+**DNS and private endpoints.** Clients use `DNS = clientDNS`, by default
+the gateway address (labfw's DNS proxy listens there and the pool is
+accepted as a DNS client automatically). labfw forwards to the policy's DNS
+servers / Azure DNS from inside the hub, so private endpoint names resolve
+to their private IPs when the private DNS zones are linked to the hub VNet —
+the same rule as for spoke VMs using labfw as DNS server. FQDN network rules
+see the client's lookups, as for any client using the DNS proxy.
+
+**Security.** Only the UDP listen port is opened, and only from the uplink;
+WireGuard answers nothing to unauthenticated packets. VPN clients get exactly
+what other trusted clients get from labfw itself (DNS proxy, CA download when
+enabled) — SSH only if the pool is in `managementSources`, never the health
+endpoint (127.0.0.1). Pool sources that do not arrive through `wg0` are
+dropped, WireGuard enforces each peer's `allowedIPs`, and everything a client
+sends is subject to the policy (default deny), so write rules for the pool
+(or for the peers' /32s) like for a spoke. Client private keys never exist
+on labfw, in workflows or in generated configs; remove a peer to revoke it.
+Status and metrics: `/status` (`vpn`), `labfw_vpn_*` in `/metrics`.
+
+**Cost.** None extra: no VPN Gateway, the VM and public IP are already
+there; tunnel traffic is normal VM bandwidth (Internet egress is billed as
+usual). A real Azure Firewall has no client VPN — the production equivalent
+is a VPN Gateway point-to-site configuration.
+
 ### Switching to a real Azure Firewall
 
 The Firewall Policy stays the source of truth, so no rule changes are
