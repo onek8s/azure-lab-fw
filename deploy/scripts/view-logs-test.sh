@@ -149,7 +149,7 @@ for i in $(seq 1 1500); do
 done >"$big/azfw.jsonl"
 LABFW_VM_LOGFILE="$big/azfw.jsonl" run cap TAIL=1000 || fail "cap: $(cat "$work/cap.stderr")"
 sent="$(sed -n 's/^VL_SENT=//p' "$work/cap/run-command-json.txt")"
-[ "$sent" -lt 1000 ] && [ "$sent" -gt 0 ] || fail "cap: sent=$sent"
+if [ "$sent" -ge 1000 ] || [ "$sent" -le 0 ]; then fail "cap: sent=$sent"; fi
 grep -q "Capped to the newest \*\*$sent of 1000\*\*" "$work/cap.md" || fail "cap: no warning in the summary"
 grep -q '::warning::fetched the newest' "$work/cap.stdout" || fail "cap: no ::warning::"
 [ "$(grep -c . "$work/cap/azfw.jsonl")" -eq "$sent" ] || fail "cap: artifact lines"
