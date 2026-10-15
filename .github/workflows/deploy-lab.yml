@@ -6,6 +6,11 @@ name: deploy-lab
 #   vars.AZURE_CLIENT_ID, vars.AZURE_TENANT_ID, vars.AZURE_SUBSCRIPTION_ID
 #   vars.LABFW_RG, vars.LABFW_LOCATION, vars.LABFW_POLICY_ID,
 #   vars.LABFW_UAMI_ID, vars.LABFW_UAMI_CLIENT_ID
+# Optional (vpnEnabled, README "VPN (WireGuard)"): vars.LABFW_VPN_PEERS (JSON
+# array of {name, publicKey, allowedIPs}; public keys only) and
+# vars.LABFW_VPN_SOURCE_PREFIXES (JSON array for the NSG rule, default
+# ["Internet"]). Azure rejects customData changes on an existing VM, so the
+# VPN is chosen when the firewall VM is first created.
 #
 # mode=existing-hub uses deploy/bicep/lab-existing-hub.bicepparam: only
 # snet-labfw is added to the existing hub VNet, spokes are NOT changed (run
@@ -40,6 +45,10 @@ on:
         description: "Deploy and use the sample Standard policy instead of vars.LABFW_POLICY_ID"
         type: boolean
         default: false
+      vpnEnabled:
+        description: "Enable the WireGuard VPN (UDP 51820; peers from vars.LABFW_VPN_PEERS and the vpn-peer workflow)"
+        type: boolean
+        default: false
 permissions:
   id-token: write
   contents: read
@@ -62,6 +71,9 @@ jobs:
       TEST_VM: ${{ inputs.testVm }}
       DEPLOY_TEST_SPOKE: ${{ inputs.deployTestSpoke }}
       DEPLOY_SAMPLE_POLICY: ${{ inputs.deploySamplePolicy }}
+      VPN_ENABLED: ${{ inputs.vpnEnabled }}
+      VPN_PEERS: ${{ vars.LABFW_VPN_PEERS || '[]' }}
+      VPN_SOURCE_PREFIXES: ${{ vars.LABFW_VPN_SOURCE_PREFIXES || '["Internet"]' }}
     steps:
       - uses: actions/checkout@v4
       - name: check inputs
@@ -80,6 +92,15 @@ jobs:
             existing-hub | isolated) ;;
             *) echo "::error::mode must be existing-hub or isolated"; exit 1 ;;
           esac
+          if [ "$VPN_ENABLED" = "true" ]; then
+            # Public keys only: base64 of 32 bytes (44 characters ending in '=').
+            jq -e 'type == "array" and all(.[]; (.name | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$"))
+                    and (.publicKey | type == "string" and test("^[A-Za-z0-9+/]{43}=$"))
+                    and (.allowedIPs | type == "array" and length > 0))' <<<"$VPN_PEERS" >/dev/null ||
+              { echo "::error::vars.LABFW_VPN_PEERS must be a JSON array of {name, publicKey, allowedIPs}"; exit 1; }
+            jq -e 'type == "array" and length > 0 and all(.[]; type == "string" and test("^[A-Za-z0-9./:]{1,64}$"))' <<<"$VPN_SOURCE_PREFIXES" >/dev/null ||
+              { echo "::error::vars.LABFW_VPN_SOURCE_PREFIXES must be a JSON array of prefixes or a service tag"; exit 1; }
+          fi
       - uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -123,6 +144,7 @@ jobs:
             export LABFW_VM_SIZE="$VM_SIZE" LABFW_TEST_VM_SIZE="$VM_SIZE"
             export LABFW_DEPLOY_SAMPLE_POLICY="$DEPLOY_SAMPLE_POLICY"
             export LABFW_RELEASE_REPO="$GITHUB_REPOSITORY"
+            export LABFW_VPN_ENABLED="$VPN_ENABLED" LABFW_VPN_PEERS="$VPN_PEERS" LABFW_VPN_SOURCE_PREFIXES="$VPN_SOURCE_PREFIXES"
             az deployment group create \
               --name "$name" \
               --resource-group "$RG" \
@@ -144,6 +166,9 @@ jobs:
                 userAssignedIdentityClientId="$UAMI_CLIENT_ID" \
                 labfwVersion="$LABFW_VERSION" \
                 labfwReleaseRepo="$GITHUB_REPOSITORY" \
+                vpnEnabled="$VPN_ENABLED" \
+                vpnPeers="$VPN_PEERS" \
+                vpnSourcePrefixes="$VPN_SOURCE_PREFIXES" \
               --query properties.outputs -o json >"$RUNNER_TEMP/outputs.json"
           fi
           rm -f "$RUNNER_TEMP/labfw_key" "$RUNNER_TEMP/labfw_key.pub"
@@ -202,6 +227,10 @@ jobs:
             if [ "$MODE" = "existing-hub" ]; then
               echo
               echo "Spokes are not routed through labfw yet: run **wire-spokes** (target=client, action=apply, confirm=wire) once the smoke test passes."
+            fi
+            if [ "$VPN_ENABLED" = "true" ]; then
+              echo
+              echo "WireGuard VPN enabled: add peers and get client configs with the **vpn-peer** workflow (README \"VPN (WireGuard)\")."
             fi
             if [ -s "$RUNNER_TEMP/smoke.txt" ]; then
               echo
