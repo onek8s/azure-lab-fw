@@ -1,0 +1,76 @@
+name: resize-lab
+# Resizes the lab VMs (managedBy=labfw-deploy) in place: deallocate, resize,
+# start. Same x64 image, so no re-deploy. Traffic routed through labfw (wired
+# spokes) is interrupted while the firewall VM is deallocated (a few
+# minutes); labfw re-applies its last-known-good policy at boot. OIDC only.
+on:
+  workflow_dispatch:
+    inputs:
+      vmSize:
+        description: "New x64 size, e.g. Standard_B2ats_v2"
+        required: true
+        default: Standard_B2ats_v2
+      which:
+        description: "fw, test or both"
+        type: choice
+        options: [both, fw, test]
+        default: both
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab
+  cancel-in-progress: false
+jobs:
+  resize:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    env:
+      RG: ${{ vars.LABFW_RG }}
+      SIZE: ${{ inputs.vmSize }}
+      WHICH: ${{ inputs.which }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: check inputs
+        run: '[[ "$SIZE" =~ ^Standard_[A-Za-z0-9_]{2,40}$ ]] || { echo "::error::bad vmSize"; exit 1; }'
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: resize
+        run: |
+          set -euo pipefail
+          case "$WHICH" in
+            fw) filt="starts_with(name, 'labfw-fw')" ;;
+            test) filt="starts_with(name, 'labfw-test')" ;;
+            *) filt="(starts_with(name, 'labfw-fw') || starts_with(name, 'labfw-test'))" ;;
+          esac
+          mapfile -t vms < <(az vm list -g "$RG" --query "[?tags.managedBy=='labfw-deploy' && $filt].name" -o tsv)
+          [ "${#vms[@]}" -gt 0 ] || { echo "::error::no lab VMs found"; exit 1; }
+          # Fail fast if the size is not offered or quota is short.
+          count="${#vms[@]}"
+          LOCATION="$(az group show -n "$RG" --query location -o tsv)" COUNT="$count" \
+            bash deploy/scripts/pick-vm-size.sh "$SIZE" >/dev/null
+          for vm in "${vms[@]}"; do
+            cur="$(az vm show -g "$RG" -n "$vm" --query hardwareProfile.vmSize -o tsv)"
+            if [ "$cur" = "$SIZE" ]; then echo "$vm already $SIZE"; continue; fi
+            echo "$vm: $cur -> $SIZE"
+            az vm deallocate -g "$RG" -n "$vm" -o none
+            az vm resize -g "$RG" -n "$vm" --size "$SIZE" -o none
+            az vm start -g "$RG" -n "$vm" -o none
+            echo "- \`$vm\`: $cur → $SIZE" >>"$GITHUB_STEP_SUMMARY"
+          done
+      - name: smoke test
+        run: |
+          set -euo pipefail
+          vm="$(az vm list -g "$RG" --query "[?tags.managedBy=='labfw-deploy' && starts_with(name, 'labfw-fw')] | [0].name" -o tsv)"
+          # shellcheck disable=SC2016
+          script='sleep 20
+          echo "LABFW_HEALTH=$(curl -s --max-time 5 127.0.0.1:9090/healthz || echo unreachable)"
+          echo "LABFW_MEM=$(free -m | awk "/Mem:/ {print \$2\" MiB total, \"\$3\" MiB used\"}")"
+          echo "LABFW_STATE=$(systemctl is-active labfw)"'
+          az vm run-command invoke -g "$RG" -n "$vm" --command-id RunShellScript \
+            --scripts "$script" --query 'value[0].message' -o tsv | tee "$RUNNER_TEMP/smoke.txt"
+          grep -qx 'LABFW_STATE=active' "$RUNNER_TEMP/smoke.txt" || { echo "::error::labfw not active after resize"; exit 1; }
+          grep '^LABFW_' "$RUNNER_TEMP/smoke.txt" | sed 's/^/- /' >>"$GITHUB_STEP_SUMMARY"
