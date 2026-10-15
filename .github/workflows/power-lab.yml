@@ -1,0 +1,60 @@
+name: power-lab
+# Starts or deallocates lab VMs to save cost (a deallocated VM is not billed
+# for compute; its disk still is). Deallocating the FIREWALL VM black-holes
+# wired spokes, so that needs confirm=fw-down. OIDC only.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [stop, start]
+        default: stop
+      which:
+        type: choice
+        options: [test, fw, both]
+        default: test
+      confirm:
+        description: 'Type "fw-down" to allow deallocating the firewall VM'
+        default: ""
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: azure-lab
+  cancel-in-progress: false
+jobs:
+  power:
+    runs-on: ubuntu-24.04
+    environment: azure-lab
+    env:
+      RG: ${{ vars.LABFW_RG }}
+      ACTION: ${{ inputs.action }}
+      WHICH: ${{ inputs.which }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: check inputs
+        run: |
+          if [ "$ACTION" = stop ] && [ "$WHICH" != test ] && [ "$CONFIRM" != fw-down ]; then
+            echo "::error::stopping the firewall VM interrupts all wired spokes; set confirm=fw-down"; exit 1
+          fi
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: power
+        run: |
+          set -euo pipefail
+          case "$WHICH" in
+            fw) filt="starts_with(name, 'labfw-fw')" ;;
+            test) filt="starts_with(name, 'labfw-test')" ;;
+            *) filt="(starts_with(name, 'labfw-fw') || starts_with(name, 'labfw-test'))" ;;
+          esac
+          mapfile -t vms < <(az vm list -g "$RG" --query "[?tags.managedBy=='labfw-deploy' && $filt].name" -o tsv)
+          [ "${#vms[@]}" -gt 0 ] || { echo "::error::no matching lab VMs"; exit 1; }
+          for vm in "${vms[@]}"; do
+            if [ "$ACTION" = stop ]; then az vm deallocate -g "$RG" -n "$vm" -o none
+            else az vm start -g "$RG" -n "$vm" -o none; fi
+            state="$(az vm get-instance-view -g "$RG" -n "$vm" --query "instanceView.statuses[?starts_with(code,'PowerState/')].displayStatus | [0]" -o tsv)"
+            echo "- \`$vm\`: $state" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
